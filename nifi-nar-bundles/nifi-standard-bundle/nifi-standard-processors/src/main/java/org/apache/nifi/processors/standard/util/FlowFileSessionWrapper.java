@@ -19,6 +19,11 @@ package org.apache.nifi.processors.standard.util;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.processor.ProcessSession;
 
+/**
+ * @deprecated As of release 0.5.0, replaced by
+ * {@link org.apache.nifi.processor.util.FlowFileSessionWrapper}
+ */
+@Deprecated
 public class FlowFileSessionWrapper {
 
     private final FlowFile flowFile;

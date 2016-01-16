@@ -70,16 +70,6 @@ nf.ProvenanceTable = (function () {
     };
 
     /**
-     * Returns whether a content viewer has been configured.
-     * 
-     * @returns {boolean}
-     */
-    var isContentViewConfigured = function () {
-        var contentViewerUrl = $('#nifi-content-viewer-url').text();
-        return !nf.Common.isBlank(contentViewerUrl);
-    };
-
-    /**
      * Downloads the content for the provenance event that is currently loaded in the specified direction.
      * 
      * @param {string} direction
@@ -206,7 +196,7 @@ nf.ProvenanceTable = (function () {
         });
 
         // if a content viewer url is specified, use it
-        if (isContentViewConfigured()) {
+        if (nf.Common.isContentViewConfigured()) {
             // input view
             $('#input-content-view').on('click', function () {
                 viewContent('input');
@@ -1279,95 +1269,59 @@ nf.ProvenanceTable = (function () {
             };
 
             // content
-            if (event.contentEqual === true) {
-                $('#output-content-details').hide();
+            $('#input-content-header').text('Input Claim');
+            formatContentValue($('#input-content-container'), event.inputContentClaimContainer);
+            formatContentValue($('#input-content-section'), event.inputContentClaimSection);
+            formatContentValue($('#input-content-identifier'), event.inputContentClaimIdentifier);
+            formatContentValue($('#input-content-offset'), event.inputContentClaimOffset);
+            formatContentValue($('#input-content-bytes'), event.inputContentClaimFileSizeBytes);
 
-                $('#input-content-header').text('Claim');
-                formatContentValue($('#input-content-container'), event.inputContentClaimContainer);
-                formatContentValue($('#input-content-section'), event.inputContentClaimSection);
-                formatContentValue($('#input-content-identifier'), event.inputContentClaimIdentifier);
-                formatContentValue($('#input-content-offset'), event.inputContentClaimOffset);
-                formatContentValue($('#input-content-bytes'), event.inputContentClaimFileSizeBytes);
+            // input content file size
+            var inputContentSize = $('#input-content-size');
+            formatContentValue(inputContentSize, event.inputContentClaimFileSize);
+            if (nf.Common.isDefinedAndNotNull(event.inputContentClaimFileSize)) {
+                // over the default tooltip with the actual byte count
+                inputContentSize.attr('title', nf.Common.formatInteger(event.inputContentClaimFileSizeBytes) + ' bytes');
+            }
 
-                // input content file size
-                var inputContentSize = $('#input-content-size');
-                formatContentValue(inputContentSize, event.inputContentClaimFileSize);
-                if (nf.Common.isDefinedAndNotNull(event.inputContentClaimFileSize)) {
-                    // over the default tooltip with the actual byte count
-                    inputContentSize.attr('title', nf.Common.formatInteger(event.inputContentClaimFileSizeBytes) + ' bytes');
-                }
+            formatContentValue($('#output-content-container'), event.outputContentClaimContainer);
+            formatContentValue($('#output-content-section'), event.outputContentClaimSection);
+            formatContentValue($('#output-content-identifier'), event.outputContentClaimIdentifier);
+            formatContentValue($('#output-content-offset'), event.outputContentClaimOffset);
+            formatContentValue($('#output-content-bytes'), event.outputContentClaimFileSizeBytes);
 
-                $('#output-content-download').hide();
+            // output content file size
+            var outputContentSize = $('#output-content-size');
+            formatContentValue(outputContentSize, event.outputContentClaimFileSize);
+            if (nf.Common.isDefinedAndNotNull(event.outputContentClaimFileSize)) {
+                // over the default tooltip with the actual byte count
+                outputContentSize.attr('title', nf.Common.formatInteger(event.outputContentClaimFileSizeBytes) + ' bytes');
+            }
 
-                if (event.inputContentAvailable === true) {
-                    $('#input-content-download').show();
+            if (event.inputContentAvailable === true) {
+                $('#input-content-download').show();
 
-                    if (isContentViewConfigured()) {
-                        $('#input-content-view').show();
-                    } else {
-                        $('#input-content-view').hide();
-                    }
+                if (nf.Common.isContentViewConfigured()) {
+                    $('#input-content-view').show();
                 } else {
-                    $('#input-content-download').hide();
                     $('#input-content-view').hide();
                 }
             } else {
-                $('#output-content-details').show();
+                $('#input-content-download').hide();
+                $('#input-content-view').hide();
+            }
 
-                $('#input-content-header').text('Input Claim');
-                formatContentValue($('#input-content-container'), event.inputContentClaimContainer);
-                formatContentValue($('#input-content-section'), event.inputContentClaimSection);
-                formatContentValue($('#input-content-identifier'), event.inputContentClaimIdentifier);
-                formatContentValue($('#input-content-offset'), event.inputContentClaimOffset);
-                formatContentValue($('#input-content-bytes'), event.inputContentClaimFileSizeBytes);
+            if (event.outputContentAvailable === true) {
+                $('#output-content-download').show();
 
-                // input content file size
-                var inputContentSize = $('#input-content-size');
-                formatContentValue(inputContentSize, event.inputContentClaimFileSize);
-                if (nf.Common.isDefinedAndNotNull(event.inputContentClaimFileSize)) {
-                    // over the default tooltip with the actual byte count
-                    inputContentSize.attr('title', nf.Common.formatInteger(event.inputContentClaimFileSizeBytes) + ' bytes');
-                }
-
-                formatContentValue($('#output-content-container'), event.outputContentClaimContainer);
-                formatContentValue($('#output-content-section'), event.outputContentClaimSection);
-                formatContentValue($('#output-content-identifier'), event.outputContentClaimIdentifier);
-                formatContentValue($('#output-content-offset'), event.outputContentClaimOffset);
-                formatContentValue($('#output-content-bytes'), event.outputContentClaimFileSizeBytes);
-
-                // output content file size
-                var outputContentSize = $('#output-content-size');
-                formatContentValue(outputContentSize, event.outputContentClaimFileSize);
-                if (nf.Common.isDefinedAndNotNull(event.outputContentClaimFileSize)) {
-                    // over the default tooltip with the actual byte count
-                    outputContentSize.attr('title', nf.Common.formatInteger(event.outputContentClaimFileSizeBytes) + ' bytes');
-                }
-
-                if (event.inputContentAvailable === true) {
-                    $('#input-content-download').show();
-
-                    if (isContentViewConfigured()) {
-                        $('#input-content-view').show();
-                    } else {
-                        $('#input-content-view').hide();
-                    }
+                if (nf.Common.isContentViewConfigured()) {
+                    $('#output-content-view').show();
                 } else {
-                    $('#input-content-download').hide();
-                    $('#input-content-view').hide();
-                }
-
-                if (event.outputContentAvailable === true) {
-                    $('#output-content-download').show();
-
-                    if (isContentViewConfigured()) {
-                        $('#output-content-view').show();
-                    } else {
-                        $('#output-content-view').hide();
-                    }
-                } else {
-                    $('#output-content-download').hide();
                     $('#output-content-view').hide();
                 }
+            } else {
+                $('#output-content-download').hide();
+                $('#output-content-view').hide();
             }
 
             if (nf.Common.isDFM()) {

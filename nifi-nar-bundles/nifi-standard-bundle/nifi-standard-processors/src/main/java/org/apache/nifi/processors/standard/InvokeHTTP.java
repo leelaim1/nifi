@@ -95,7 +95,8 @@ import org.joda.time.format.DateTimeFormatter;
 @SupportsBatching
 @Tags({"http", "https", "rest", "client"})
 @InputRequirement(Requirement.INPUT_ALLOWED)
-@CapabilityDescription("An HTTP client processor which converts FlowFile attributes to HTTP headers, with configurable HTTP method, url, etc.")
+@CapabilityDescription("An HTTP client processor which can interact with a configurable HTTP Endpoint. The destination URL and HTTP Method are configurable."
+    + " FlowFile attributes are converted to HTTP headers and the FlowFile contents are included as the body of the request (if the HTTP Method is PUT or POST).")
 @WritesAttributes({
     @WritesAttribute(attribute = "invokehttp.status.code", description = "The status code that is returned"),
     @WritesAttribute(attribute = "invokehttp.status.message", description = "The status message that is returned"),
@@ -119,6 +120,8 @@ public final class InvokeHTTP extends AbstractProcessor {
     public final static String TRANSACTION_ID = "invokehttp.tx.id";
     public final static String REMOTE_DN = "invokehttp.remote.dn";
 
+    public static final String DEFAULT_CONTENT_TYPE = "application/octet-stream";
+
     // Set of flowfile attributes which we generally always ignore during
     // processing, including when converting http headers, copying attributes, etc.
     // This set includes our strings defined above as well as some standard flowfile
@@ -130,8 +133,8 @@ public final class InvokeHTTP extends AbstractProcessor {
     // properties
     public static final PropertyDescriptor PROP_METHOD = new PropertyDescriptor.Builder()
             .name("HTTP Method")
-            .description("HTTP request method (GET, POST, PUT, DELETE, HEAD, OPTIONS). Arbitrary methods are also supported but will "
-                    + "be sent without a message body.")
+            .description("HTTP request method (GET, POST, PUT, DELETE, HEAD, OPTIONS). Arbitrary methods are also supported. "
+                + "Methods other than POST and PUT will be sent without a message body.")
             .required(true)
             .defaultValue("GET")
             .expressionLanguageSupported(true)
@@ -210,6 +213,16 @@ public final class InvokeHTTP extends AbstractProcessor {
             .required(false)
             .addValidator(StandardValidators.PORT_VALIDATOR)
             .build();
+
+    public static final PropertyDescriptor PROP_CONTENT_TYPE = new PropertyDescriptor.Builder()
+        .name("Content-Type")
+        .description("The Content-Type to specify for when content is being transmitted through a PUT or POST. "
+            + "In the case of an empty value after evaluating an expression language expression, Content-Type defaults to " + DEFAULT_CONTENT_TYPE)
+        .required(true)
+        .expressionLanguageSupported(true)
+        .defaultValue("${" + CoreAttributes.MIME_TYPE.key() + "}")
+        .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+        .build();
 
     // Per RFC 7235, 2617, and 2616.
     // basic-credentials = base64-user-pass
@@ -315,7 +328,8 @@ public final class InvokeHTTP extends AbstractProcessor {
             PROP_DIGEST_AUTH,
             PROP_OUTPUT_RESPONSE_REGARDLESS,
             PROP_TRUSTED_HOSTNAME,
-            PROP_ADD_HEADERS_TO_REQUEST));
+            PROP_ADD_HEADERS_TO_REQUEST,
+            PROP_CONTENT_TYPE));
 
     // relationships
     public static final Relationship REL_SUCCESS_REQ = new Relationship.Builder()
@@ -361,8 +375,6 @@ public final class InvokeHTTP extends AbstractProcessor {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormat.forPattern(RFC_1123).withLocale(Locale.US).withZoneUTC();
 
     private final AtomicReference<OkHttpClient> okHttpClientAtomicReference = new AtomicReference<>();
-
-    public static final String DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
@@ -544,7 +556,7 @@ public final class InvokeHTTP extends AbstractProcessor {
                 throw new IllegalStateException("Status code unknown, connection hasn't been attempted.");
             }
 
-            // Create a map of the status attributes that are always written to the request and reponse FlowFiles
+            // Create a map of the status attributes that are always written to the request and response FlowFiles
             Map<String, String> statusAttributes = new HashMap<>();
             statusAttributes.put(STATUS_CODE, String.valueOf(statusCode));
             statusAttributes.put(STATUS_MESSAGE, statusMessage);
@@ -590,7 +602,7 @@ public final class InvokeHTTP extends AbstractProcessor {
                         responseFlowFile = session.create();
                     }
 
-                    // write the status attributes
+                    // write attributes to response flowfile
                     responseFlowFile = session.putAllAttributes(responseFlowFile, statusAttributes);
 
                     // write the response headers as attributes
@@ -600,6 +612,10 @@ public final class InvokeHTTP extends AbstractProcessor {
                     // transfer the message body to the payload
                     // can potentially be null in edge cases
                     if (bodyExists) {
+                        // write content type attribute to response flowfile if it is available
+                        if (responseBody.contentType() != null) {
+                             responseFlowFile = session.putAttribute(responseFlowFile, CoreAttributes.MIME_TYPE.key(), responseBody.contentType().toString());
+                        }
                         if (teeInputStream != null) {
                             responseFlowFile = session.importFrom(teeInputStream, responseFlowFile);
                         } else {
@@ -700,11 +716,11 @@ public final class InvokeHTTP extends AbstractProcessor {
                 requestBuilder = requestBuilder.get();
                 break;
             case "POST":
-                RequestBody requestBody = getRequestBodyToSend(session, requestFlowFile);
+                RequestBody requestBody = getRequestBodyToSend(session, context, requestFlowFile);
                 requestBuilder = requestBuilder.post(requestBody);
                 break;
             case "PUT":
-                requestBody = getRequestBodyToSend(session, requestFlowFile);
+                requestBody = getRequestBodyToSend(session, context, requestFlowFile);
                 requestBuilder = requestBuilder.put(requestBody);
                 break;
             case "HEAD":
@@ -722,12 +738,12 @@ public final class InvokeHTTP extends AbstractProcessor {
         return requestBuilder.build();
     }
 
-    private RequestBody getRequestBodyToSend(final ProcessSession session, final FlowFile requestFlowFile) {
+    private RequestBody getRequestBodyToSend(final ProcessSession session, final ProcessContext context, final FlowFile requestFlowFile) {
         return new RequestBody() {
             @Override
             public MediaType contentType() {
-                final String attributeValue = requestFlowFile.getAttribute(CoreAttributes.MIME_TYPE.key());
-                String contentType = attributeValue == null ? DEFAULT_CONTENT_TYPE : attributeValue;
+                String contentType = context.getProperty(PROP_CONTENT_TYPE).evaluateAttributeExpressions(requestFlowFile).getValue();
+                contentType = StringUtils.isBlank(contentType) ? DEFAULT_CONTENT_TYPE : contentType;
                 return MediaType.parse(contentType);
             }
 

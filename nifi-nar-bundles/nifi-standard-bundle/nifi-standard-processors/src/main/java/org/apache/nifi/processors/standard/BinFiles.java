@@ -46,7 +46,10 @@ import org.apache.nifi.processors.standard.util.FlowFileSessionWrapper;
 /**
  * Base class for file-binning processors, including MergeContent.
  *
+ * @deprecated As of release 0.5.0, replaced by
+ * {@link org.apache.nifi.processor.util.bin.BinFiles}
  */
+@Deprecated
 public abstract class BinFiles extends AbstractSessionFactoryProcessor {
 
     public static final PropertyDescriptor MIN_SIZE = new PropertyDescriptor.Builder()

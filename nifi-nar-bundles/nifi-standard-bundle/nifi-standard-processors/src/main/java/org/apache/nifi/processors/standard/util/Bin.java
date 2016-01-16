@@ -24,6 +24,11 @@ import java.util.regex.Pattern;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.processor.ProcessSession;
 
+/**
+ * @deprecated As of release 0.5.0, replaced by
+ * {@link org.apache.nifi.processor.util.bin.Bin}
+ */
+@Deprecated
 public class Bin {
 
     private final long creationMomentEpochNs;

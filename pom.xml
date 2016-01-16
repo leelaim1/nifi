@@ -241,13 +241,18 @@ language governing permissions and limitations under the License. -->
             </dependency>
             <dependency>
                 <groupId>org.bouncycastle</groupId>
-                <artifactId>bcprov-jdk16</artifactId>
-                <version>1.46</version>
+                <artifactId>bcprov-jdk15on</artifactId>
+                <version>1.54</version>
             </dependency>
             <dependency>
                 <groupId>org.bouncycastle</groupId>
-                <artifactId>bcpg-jdk16</artifactId>
-                <version>1.46</version>
+                <artifactId>bcpg-jdk15on</artifactId>
+                <version>1.54</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcpkix-jdk15on</artifactId>
+                <version>1.54</version>
             </dependency>
             <dependency>
                 <groupId>com.jcraft</groupId>
@@ -977,6 +982,12 @@ language governing permissions and limitations under the License. -->
             <dependency>
                 <groupId>org.apache.nifi</groupId>
                 <artifactId>nifi-couchbase-nar</artifactId>
+                <version>0.4.2-SNAPSHOT</version>
+                <type>nar</type>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.nifi</groupId>
+                <artifactId>nifi-riemann-nar</artifactId>
                 <version>0.4.2-SNAPSHOT</version>
                 <type>nar</type>
             </dependency>

@@ -34,7 +34,10 @@ import org.apache.nifi.processor.ProcessSession;
 /**
  * This class is thread safe
  *
+ * @deprecated As of release 0.5.0, replaced by
+ * {@link org.apache.nifi.processor.util.bin.BinManager}
  */
+@Deprecated
 public class BinManager {
 
     private final AtomicLong minSizeBytes = new AtomicLong(0L);
