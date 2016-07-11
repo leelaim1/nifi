@@ -18,10 +18,12 @@ package org.apache.nifi.processors.standard.util;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
@@ -44,40 +46,44 @@ import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.DatumReader;
 import org.junit.Assert;
 import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 public class TestJdbcCommon {
 
-    final static String DB_LOCATION = "target/db";
+    static final String createTable = "create table restaurants(id integer, name varchar(20), city varchar(50))";
+    static final String dropTable = "drop table restaurants";
+
+    @ClassRule
+    public static TemporaryFolder folder = new TemporaryFolder();
+
+    /**
+     * Setting up Connection is expensive operation.
+     * So let's do this only once and reuse Connection in each test.
+     */
+    static protected Connection con;
 
     @BeforeClass
-    public static void setup() {
+    public static void setup() throws ClassNotFoundException, SQLException {
         System.setProperty("derby.stream.error.file", "target/derby.log");
-    }
+        Class.forName("org.apache.derby.jdbc.EmbeddedDriver");
+        // remove previous test database, if any
+        folder.delete();
 
-    String createTable = "create table restaurants(id integer, name varchar(20), city varchar(50))";
-    String dropTable = "drop table restaurants";
+        String location = folder.getRoot().getAbsolutePath();
+        con = DriverManager.getConnection("jdbc:derby:" + location + ";create=true");
+        try (final Statement stmt = con.createStatement()) {
+            stmt.executeUpdate(createTable);
+        }
+    }
 
     @Test
     public void testCreateSchema() throws ClassNotFoundException, SQLException {
-
-        // remove previous test database, if any
-        final File dbLocation = new File(DB_LOCATION);
-        dbLocation.delete();
-
-        final Connection con = createConnection();
         final Statement st = con.createStatement();
-
-        try {
-            st.executeUpdate(dropTable);
-        } catch (final Exception e) {
-            // table may not exist, this is not serious problem.
-        }
-
-        st.executeUpdate(createTable);
         st.executeUpdate("insert into restaurants values (1, 'Irifunes', 'San Mateo')");
         st.executeUpdate("insert into restaurants values (2, 'Estradas', 'Daly City')");
         st.executeUpdate("insert into restaurants values (3, 'Prime Rib House', 'San Francisco')");
@@ -96,26 +102,50 @@ public class TestJdbcCommon {
         assertNotNull(schema.getField("CITY"));
 
         st.close();
-        con.close();
+//        con.close();
+    }
+
+    @Test
+    public void testCreateSchemaNoColumns() throws ClassNotFoundException, SQLException {
+
+        final ResultSet resultSet = mock(ResultSet.class);
+        final ResultSetMetaData resultSetMetaData = mock(ResultSetMetaData.class);
+        when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
+        when(resultSetMetaData.getColumnCount()).thenReturn(0);
+        when(resultSetMetaData.getTableName(1)).thenThrow(SQLException.class);
+
+        final Schema schema = JdbcCommon.createSchema(resultSet);
+        assertNotNull(schema);
+
+        // records name, should be result set first column table name
+        // Notice! sql select may join data from different tables, other columns
+        // may have different table names
+        assertEquals("NiFi_ExecuteSQL_Record", schema.getName());
+        assertNull(schema.getField("ID"));
+    }
+
+    @Test
+    public void testCreateSchemaNoTableName() throws ClassNotFoundException, SQLException {
+
+        final ResultSet resultSet = mock(ResultSet.class);
+        final ResultSetMetaData resultSetMetaData = mock(ResultSetMetaData.class);
+        when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
+        when(resultSetMetaData.getColumnCount()).thenReturn(1);
+        when(resultSetMetaData.getTableName(1)).thenReturn("");
+        when(resultSetMetaData.getColumnType(1)).thenReturn(Types.INTEGER);
+        when(resultSetMetaData.getColumnName(1)).thenReturn("ID");
+
+        final Schema schema = JdbcCommon.createSchema(resultSet);
+        assertNotNull(schema);
+
+        // records name, should be result set first column table name
+        assertEquals("NiFi_ExecuteSQL_Record", schema.getName());
+
     }
 
     @Test
     public void testConvertToBytes() throws ClassNotFoundException, SQLException, IOException {
-        // remove previous test database, if any
-        final File dbLocation = new File(DB_LOCATION);
-        dbLocation.delete();
-
-        final Connection con = createConnection();
         final Statement st = con.createStatement();
-
-        try {
-            st.executeUpdate(dropTable);
-        } catch (final Exception e) {
-            // table may not exist, this is not serious problem.
-        }
-
-        st.executeUpdate(createTable);
-
         st.executeUpdate("insert into restaurants values (1, 'Irifunes', 'San Mateo')");
         st.executeUpdate("insert into restaurants values (2, 'Estradas', 'Daly City')");
         st.executeUpdate("insert into restaurants values (3, 'Prime Rib House', 'San Francisco')");
@@ -136,8 +166,8 @@ public class TestJdbcCommon {
 
         final InputStream instream = new ByteArrayInputStream(serializedBytes);
 
-        final DatumReader<GenericRecord> datumReader = new GenericDatumReader<GenericRecord>();
-        try (final DataFileStream<GenericRecord> dataFileReader = new DataFileStream<GenericRecord>(instream, datumReader)) {
+        final DatumReader<GenericRecord> datumReader = new GenericDatumReader<>();
+        try (final DataFileStream<GenericRecord> dataFileReader = new DataFileStream<>(instream, datumReader)) {
             GenericRecord record = null;
             while (dataFileReader.hasNext()) {
                 // Reuse record object by passing it to next(). This saves us from
@@ -165,14 +195,14 @@ public class TestJdbcCommon {
                 continue;
             }
 
-            final ResultSetMetaData metadata = Mockito.mock(ResultSetMetaData.class);
-            Mockito.when(metadata.getColumnCount()).thenReturn(1);
-            Mockito.when(metadata.getColumnType(1)).thenReturn(type);
-            Mockito.when(metadata.getColumnName(1)).thenReturn(field.getName());
-            Mockito.when(metadata.getTableName(1)).thenReturn("table");
+            final ResultSetMetaData metadata = mock(ResultSetMetaData.class);
+            when(metadata.getColumnCount()).thenReturn(1);
+            when(metadata.getColumnType(1)).thenReturn(type);
+            when(metadata.getColumnName(1)).thenReturn(field.getName());
+            when(metadata.getTableName(1)).thenReturn("table");
 
-            final ResultSet rs = Mockito.mock(ResultSet.class);
-            Mockito.when(rs.getMetaData()).thenReturn(metadata);
+            final ResultSet rs = mock(ResultSet.class);
+            when(rs.getMetaData()).thenReturn(metadata);
 
             try {
                 JdbcCommon.createSchema(rs);
@@ -185,15 +215,15 @@ public class TestJdbcCommon {
 
     @Test
     public void testSignedIntShouldBeInt() throws SQLException, IllegalArgumentException, IllegalAccessException {
-        final ResultSetMetaData metadata = Mockito.mock(ResultSetMetaData.class);
-        Mockito.when(metadata.getColumnCount()).thenReturn(1);
-        Mockito.when(metadata.getColumnType(1)).thenReturn(Types.INTEGER);
-        Mockito.when(metadata.isSigned(1)).thenReturn(true);
-        Mockito.when(metadata.getColumnName(1)).thenReturn("Col1");
-        Mockito.when(metadata.getTableName(1)).thenReturn("Table1");
+        final ResultSetMetaData metadata = mock(ResultSetMetaData.class);
+        when(metadata.getColumnCount()).thenReturn(1);
+        when(metadata.getColumnType(1)).thenReturn(Types.INTEGER);
+        when(metadata.isSigned(1)).thenReturn(true);
+        when(metadata.getColumnName(1)).thenReturn("Col1");
+        when(metadata.getTableName(1)).thenReturn("Table1");
 
-        final ResultSet rs = Mockito.mock(ResultSet.class);
-        Mockito.when(rs.getMetaData()).thenReturn(metadata);
+        final ResultSet rs = mock(ResultSet.class);
+        when(rs.getMetaData()).thenReturn(metadata);
 
         Schema schema = JdbcCommon.createSchema(rs);
         Assert.assertNotNull(schema);
@@ -219,15 +249,15 @@ public class TestJdbcCommon {
 
     @Test
     public void testUnsignedIntShouldBeLong() throws SQLException, IllegalArgumentException, IllegalAccessException {
-        final ResultSetMetaData metadata = Mockito.mock(ResultSetMetaData.class);
-        Mockito.when(metadata.getColumnCount()).thenReturn(1);
-        Mockito.when(metadata.getColumnType(1)).thenReturn(Types.INTEGER);
-        Mockito.when(metadata.isSigned(1)).thenReturn(false);
-        Mockito.when(metadata.getColumnName(1)).thenReturn("Col1");
-        Mockito.when(metadata.getTableName(1)).thenReturn("Table1");
+        final ResultSetMetaData metadata = mock(ResultSetMetaData.class);
+        when(metadata.getColumnCount()).thenReturn(1);
+        when(metadata.getColumnType(1)).thenReturn(Types.INTEGER);
+        when(metadata.isSigned(1)).thenReturn(false);
+        when(metadata.getColumnName(1)).thenReturn("Col1");
+        when(metadata.getTableName(1)).thenReturn("Table1");
 
-        final ResultSet rs = Mockito.mock(ResultSet.class);
-        Mockito.when(rs.getMetaData()).thenReturn(metadata);
+        final ResultSet rs = mock(ResultSet.class);
+        when(rs.getMetaData()).thenReturn(metadata);
 
         Schema schema = JdbcCommon.createSchema(rs);
         Assert.assertNotNull(schema);
@@ -254,14 +284,14 @@ public class TestJdbcCommon {
 
     @Test
     public void testConvertToAvroStreamForBigDecimal() throws SQLException, IOException {
-        final ResultSetMetaData metadata = Mockito.mock(ResultSetMetaData.class);
-        Mockito.when(metadata.getColumnCount()).thenReturn(1);
-        Mockito.when(metadata.getColumnType(1)).thenReturn(Types.NUMERIC);
-        Mockito.when(metadata.getColumnName(1)).thenReturn("Chairman");
-        Mockito.when(metadata.getTableName(1)).thenReturn("table");
+        final ResultSetMetaData metadata = mock(ResultSetMetaData.class);
+        when(metadata.getColumnCount()).thenReturn(1);
+        when(metadata.getColumnType(1)).thenReturn(Types.NUMERIC);
+        when(metadata.getColumnName(1)).thenReturn("Chairman");
+        when(metadata.getTableName(1)).thenReturn("table");
 
-        final ResultSet rs = Mockito.mock(ResultSet.class);
-        Mockito.when(rs.getMetaData()).thenReturn(metadata);
+        final ResultSet rs = mock(ResultSet.class);
+        when(rs.getMetaData()).thenReturn(metadata);
 
         final AtomicInteger counter = new AtomicInteger(1);
         Mockito.doAnswer(new Answer<Boolean>() {
@@ -272,7 +302,7 @@ public class TestJdbcCommon {
         }).when(rs).next();
 
         final BigDecimal bigDecimal = new BigDecimal(38D);
-        Mockito.when(rs.getObject(Mockito.anyInt())).thenReturn(bigDecimal);
+        when(rs.getObject(Mockito.anyInt())).thenReturn(bigDecimal);
 
         final ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
@@ -282,8 +312,8 @@ public class TestJdbcCommon {
 
         final InputStream instream = new ByteArrayInputStream(serializedBytes);
 
-        final DatumReader<GenericRecord> datumReader = new GenericDatumReader<GenericRecord>();
-        try (final DataFileStream<GenericRecord> dataFileReader = new DataFileStream<GenericRecord>(instream, datumReader)) {
+        final DatumReader<GenericRecord> datumReader = new GenericDatumReader<>();
+        try (final DataFileStream<GenericRecord> dataFileReader = new DataFileStream<>(instream, datumReader)) {
             GenericRecord record = null;
             while (dataFileReader.hasNext()) {
                 record = dataFileReader.next(record);
@@ -298,13 +328,6 @@ public class TestJdbcCommon {
     public void testDriverLoad() throws ClassNotFoundException {
         final Class<?> clazz = Class.forName("org.apache.derby.jdbc.EmbeddedDriver");
         assertNotNull(clazz);
-    }
-
-    private Connection createConnection() throws ClassNotFoundException, SQLException {
-
-        Class.forName("org.apache.derby.jdbc.EmbeddedDriver");
-        final Connection con = DriverManager.getConnection("jdbc:derby:" + DB_LOCATION + ";create=true");
-        return con;
     }
 
 }

@@ -24,6 +24,7 @@ import java.io.ByteArrayOutputStream;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
 import org.apache.nifi.ssl.SSLContextService;
 import org.apache.nifi.ssl.StandardSSLContextService;
@@ -81,6 +82,7 @@ public class TestPostHTTP {
 
         runner.setProperty(PostHTTP.URL, server.getSecureUrl());
         runner.setProperty(PostHTTP.SSL_CONTEXT_SERVICE, "ssl-context");
+        runner.setProperty(PostHTTP.CHUNKED_ENCODING, "false");
 
         runner.enqueue("Hello world".getBytes());
         runner.run();
@@ -112,6 +114,7 @@ public class TestPostHTTP {
 
         runner.setProperty(PostHTTP.URL, server.getSecureUrl());
         runner.setProperty(PostHTTP.SSL_CONTEXT_SERVICE, "ssl-context");
+        runner.setProperty(PostHTTP.CHUNKED_ENCODING, "false");
 
         runner.enqueue("Hello world".getBytes());
         runner.run();
@@ -140,6 +143,7 @@ public class TestPostHTTP {
 
         runner.setProperty(PostHTTP.URL, server.getSecureUrl());
         runner.setProperty(PostHTTP.SSL_CONTEXT_SERVICE, "ssl-context");
+        runner.setProperty(PostHTTP.CHUNKED_ENCODING, "false");
 
         runner.enqueue("Hello world".getBytes());
         runner.run();
@@ -185,6 +189,7 @@ public class TestPostHTTP {
         assertEquals("World", new String(contentReceived));
         assertEquals("abc", receivedAttrs.get("abc"));
         assertEquals("xyz.txt", receivedAttrs.get("filename"));
+        Assert.assertNull(receivedAttrs.get("Content-Length"));
     }
 
     @Test
@@ -256,23 +261,26 @@ public class TestPostHTTP {
 
         final String suppliedMimeType = "text/plain";
         attrs.put(CoreAttributes.MIME_TYPE.key(), suppliedMimeType);
-        runner.enqueue("Camping is in tents.".getBytes(), attrs);
+        runner.enqueue("Camping is great!".getBytes(), attrs);
+        runner.setProperty(PostHTTP.CHUNKED_ENCODING, "false");
 
         runner.run(1);
         runner.assertAllFlowFilesTransferred(PostHTTP.REL_SUCCESS);
 
         Map<String, String> lastPostHeaders = servlet.getLastPostHeaders();
         Assert.assertEquals(suppliedMimeType, lastPostHeaders.get(PostHTTP.CONTENT_TYPE_HEADER));
+        Assert.assertEquals("17",lastPostHeaders.get("Content-Length"));
     }
 
     @Test
     public void testSendWithEmptyELExpression() throws Exception {
         setup(null);
         runner.setProperty(PostHTTP.URL, server.getUrl());
+        runner.setProperty(PostHTTP.CHUNKED_ENCODING, "false");
 
         final Map<String, String> attrs = new HashMap<>();
         attrs.put(CoreAttributes.MIME_TYPE.key(), "");
-        runner.enqueue("The wilderness downtown.".getBytes(), attrs);
+        runner.enqueue("The wilderness.".getBytes(), attrs);
 
         runner.run(1);
         runner.assertAllFlowFilesTransferred(PostHTTP.REL_SUCCESS);
@@ -288,15 +296,142 @@ public class TestPostHTTP {
         final String suppliedMimeType = "text/plain";
         runner.setProperty(PostHTTP.URL, server.getUrl());
         runner.setProperty(PostHTTP.CONTENT_TYPE, suppliedMimeType);
+        runner.setProperty(PostHTTP.CHUNKED_ENCODING, "false");
 
         final Map<String, String> attrs = new HashMap<>();
         attrs.put(CoreAttributes.MIME_TYPE.key(), "text/csv");
-        runner.enqueue("Try this trick and spin it.".getBytes(), attrs);
+        runner.enqueue("Sending with content type property.".getBytes(), attrs);
 
         runner.run(1);
         runner.assertAllFlowFilesTransferred(PostHTTP.REL_SUCCESS);
 
         Map<String, String> lastPostHeaders = servlet.getLastPostHeaders();
         Assert.assertEquals(suppliedMimeType, lastPostHeaders.get(PostHTTP.CONTENT_TYPE_HEADER));
+    }
+
+    @Test
+    public void testSendWithCompressionServerAcceptGzip() throws Exception {
+        setup(null);
+
+        final String suppliedMimeType = "text/plain";
+        runner.setProperty(PostHTTP.URL, server.getUrl());
+        runner.setProperty(PostHTTP.CONTENT_TYPE, suppliedMimeType);
+        runner.setProperty(PostHTTP.COMPRESSION_LEVEL, "9");
+
+        final Map<String, String> attrs = new HashMap<>();
+        attrs.put(CoreAttributes.MIME_TYPE.key(), "text/plain");
+
+        runner.enqueue(StringUtils.repeat("Lines of sample text.", 100).getBytes(), attrs);
+
+        runner.run(1);
+        runner.assertAllFlowFilesTransferred(PostHTTP.REL_SUCCESS);
+
+        Map<String, String> lastPostHeaders = servlet.getLastPostHeaders();
+        Assert.assertEquals(suppliedMimeType, lastPostHeaders.get(PostHTTP.CONTENT_TYPE_HEADER));
+        // Ensure that a 'Content-Encoding' header was set with a 'gzip' value
+        Assert.assertEquals(PostHTTP.CONTENT_ENCODING_GZIP_VALUE, lastPostHeaders.get(PostHTTP.CONTENT_ENCODING_HEADER));
+        Assert.assertNull(lastPostHeaders.get("Content-Length"));
+    }
+
+    @Test
+    public void testSendWithoutCompressionServerAcceptGzip() throws Exception {
+        setup(null);
+
+        final String suppliedMimeType = "text/plain";
+        runner.setProperty(PostHTTP.URL, server.getUrl());
+        runner.setProperty(PostHTTP.CONTENT_TYPE, suppliedMimeType);
+        runner.setProperty(PostHTTP.COMPRESSION_LEVEL, "0");
+        runner.setProperty(PostHTTP.CHUNKED_ENCODING, "false");
+
+        final Map<String, String> attrs = new HashMap<>();
+        attrs.put(CoreAttributes.MIME_TYPE.key(), "text/plain");
+
+        runner.enqueue(StringUtils.repeat("Lines of sample text.", 100).getBytes(), attrs);
+
+        runner.run(1);
+        runner.assertAllFlowFilesTransferred(PostHTTP.REL_SUCCESS);
+
+        Map<String, String> lastPostHeaders = servlet.getLastPostHeaders();
+        Assert.assertEquals(suppliedMimeType, lastPostHeaders.get(PostHTTP.CONTENT_TYPE_HEADER));
+        // Ensure that the request was not sent with a 'Content-Encoding' header
+        Assert.assertNull(lastPostHeaders.get(PostHTTP.CONTENT_ENCODING_HEADER));
+        Assert.assertEquals("2100",lastPostHeaders.get("Content-Length"));
+    }
+
+    @Test
+    public void testSendWithCompressionServerNotAcceptGzip() throws Exception {
+        setup(null);
+
+        final String suppliedMimeType = "text/plain";
+        // Specify a property to the URL to have the CaptureServlet specify it doesn't accept gzip
+        runner.setProperty(PostHTTP.URL, server.getUrl()+"?acceptGzip=false");
+        runner.setProperty(PostHTTP.CONTENT_TYPE, suppliedMimeType);
+        runner.setProperty(PostHTTP.COMPRESSION_LEVEL, "9");
+
+        final Map<String, String> attrs = new HashMap<>();
+        attrs.put(CoreAttributes.MIME_TYPE.key(), "text/plain");
+
+        runner.enqueue(StringUtils.repeat("Lines of sample text.", 100).getBytes(), attrs);
+
+        runner.run(1);
+        runner.assertAllFlowFilesTransferred(PostHTTP.REL_SUCCESS);
+
+        Map<String, String> lastPostHeaders = servlet.getLastPostHeaders();
+        Assert.assertEquals(suppliedMimeType, lastPostHeaders.get(PostHTTP.CONTENT_TYPE_HEADER));
+        // Ensure that the request was not sent with a 'Content-Encoding' header
+        Assert.assertNull(lastPostHeaders.get(PostHTTP.CONTENT_ENCODING_HEADER));
+    }
+
+    @Test
+    public void testSendChunked() throws Exception {
+        setup(null);
+
+        final String suppliedMimeType = "text/plain";
+        runner.setProperty(PostHTTP.URL, server.getUrl());
+        runner.setProperty(PostHTTP.CONTENT_TYPE, suppliedMimeType);
+        runner.setProperty(PostHTTP.CHUNKED_ENCODING, "true");
+
+        final Map<String, String> attrs = new HashMap<>();
+        attrs.put(CoreAttributes.MIME_TYPE.key(), "text/plain");
+
+        runner.enqueue(StringUtils.repeat("Lines of sample text.", 100).getBytes(), attrs);
+
+        runner.run(1);
+        runner.assertAllFlowFilesTransferred(PostHTTP.REL_SUCCESS);
+
+        byte[] postValue = servlet.getLastPost();
+        Assert.assertArrayEquals(StringUtils.repeat("Lines of sample text.", 100).getBytes(),postValue);
+
+        Map<String, String> lastPostHeaders = servlet.getLastPostHeaders();
+        Assert.assertEquals(suppliedMimeType, lastPostHeaders.get(PostHTTP.CONTENT_TYPE_HEADER));
+        Assert.assertNull(lastPostHeaders.get("Content-Length"));
+        Assert.assertEquals("chunked",lastPostHeaders.get("Transfer-Encoding"));
+    }
+
+    @Test
+    public void testSendWithThrottler() throws Exception {
+        setup(null);
+
+        final String suppliedMimeType = "text/plain";
+        runner.setProperty(PostHTTP.URL, server.getUrl());
+        runner.setProperty(PostHTTP.CONTENT_TYPE, suppliedMimeType);
+        runner.setProperty(PostHTTP.CHUNKED_ENCODING, "false");
+        runner.setProperty(PostHTTP.MAX_DATA_RATE, "10kb");
+
+        final Map<String, String> attrs = new HashMap<>();
+        attrs.put(CoreAttributes.MIME_TYPE.key(), "text/plain");
+
+        runner.enqueue(StringUtils.repeat("This is a line of sample text. Here is another.", 100).getBytes(), attrs);
+
+        boolean stopOnFinish = true;
+        runner.run(1, stopOnFinish);
+        runner.assertAllFlowFilesTransferred(PostHTTP.REL_SUCCESS);
+
+        byte[] postValue = servlet.getLastPost();
+        Assert.assertArrayEquals(StringUtils.repeat("This is a line of sample text. Here is another.", 100).getBytes(),postValue);
+
+        Map<String, String> lastPostHeaders = servlet.getLastPostHeaders();
+        Assert.assertEquals(suppliedMimeType, lastPostHeaders.get(PostHTTP.CONTENT_TYPE_HEADER));
+        Assert.assertEquals("4700",lastPostHeaders.get("Content-Length"));
     }
 }

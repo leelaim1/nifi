@@ -17,17 +17,20 @@
 package org.apache.nifi.web;
 
 import org.apache.nifi.admin.service.UserService;
-import org.apache.nifi.authentication.LoginIdentityProvider;
 import org.apache.nifi.util.NiFiProperties;
 import org.apache.nifi.web.security.NiFiAuthenticationProvider;
 import org.apache.nifi.web.security.anonymous.NiFiAnonymousUserFilter;
 import org.apache.nifi.web.security.jwt.JwtAuthenticationFilter;
 import org.apache.nifi.web.security.jwt.JwtService;
 import org.apache.nifi.web.security.node.NodeAuthorizedUserFilter;
-import org.apache.nifi.web.security.token.NiFiAuthortizationRequestToken;
+import org.apache.nifi.web.security.otp.OtpAuthenticationFilter;
+import org.apache.nifi.web.security.otp.OtpService;
+import org.apache.nifi.web.security.token.NiFiAuthorizationRequestToken;
 import org.apache.nifi.web.security.x509.X509AuthenticationFilter;
 import org.apache.nifi.web.security.x509.X509CertificateExtractor;
 import org.apache.nifi.web.security.x509.X509IdentityProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -49,17 +52,19 @@ import org.springframework.security.web.authentication.AnonymousAuthenticationFi
 @EnableWebSecurity
 @EnableGlobalMethodSecurity(prePostEnabled = true)
 public class NiFiWebApiSecurityConfiguration extends WebSecurityConfigurerAdapter {
+    private static final Logger logger = LoggerFactory.getLogger(NiFiWebApiSecurityConfiguration.class);
 
     private NiFiProperties properties;
     private UserService userService;
-    private AuthenticationUserDetailsService userDetailsService;
+    private AuthenticationUserDetailsService authenticationUserDetailsService;
     private JwtService jwtService;
+    private OtpService otpService;
     private X509CertificateExtractor certificateExtractor;
     private X509IdentityProvider certificateIdentityProvider;
-    private LoginIdentityProvider loginIdentityProvider;
 
     private NodeAuthorizedUserFilter nodeAuthorizedUserFilter;
     private JwtAuthenticationFilter jwtAuthenticationFilter;
+    private OtpAuthenticationFilter otpAuthenticationFilter;
     private X509AuthenticationFilter x509AuthenticationFilter;
     private NiFiAnonymousUserFilter anonymousAuthenticationFilter;
 
@@ -69,9 +74,12 @@ public class NiFiWebApiSecurityConfiguration extends WebSecurityConfigurerAdapte
 
     @Override
     public void configure(WebSecurity webSecurity) throws Exception {
+        // ignore the access endpoints for obtaining the access config, the access token
+        // granting, and access status for a given user (note: we are not ignoring the
+        // the /access/download-token and /access/ui-extension-token endpoints
         webSecurity
                 .ignoring()
-                    .antMatchers("/access/**");
+                    .antMatchers("/access", "/access/config", "/access/token", "/access/kerberos");
     }
 
     @Override
@@ -95,6 +103,9 @@ public class NiFiWebApiSecurityConfiguration extends WebSecurityConfigurerAdapte
 
         // jwt
         http.addFilterAfter(jwtFilterBean(), AnonymousAuthenticationFilter.class);
+
+        // otp
+        http.addFilterAfter(otpFilterBean(), AnonymousAuthenticationFilter.class);
     }
 
     @Bean
@@ -106,7 +117,7 @@ public class NiFiWebApiSecurityConfiguration extends WebSecurityConfigurerAdapte
 
     @Override
     protected void configure(AuthenticationManagerBuilder auth) throws Exception {
-        auth.authenticationProvider(new NiFiAuthenticationProvider(userDetailsService));
+        auth.authenticationProvider(new NiFiAuthenticationProvider(authenticationUserDetailsService));
     }
 
     @Bean
@@ -126,13 +137,20 @@ public class NiFiWebApiSecurityConfiguration extends WebSecurityConfigurerAdapte
             jwtAuthenticationFilter = new JwtAuthenticationFilter();
             jwtAuthenticationFilter.setProperties(properties);
             jwtAuthenticationFilter.setAuthenticationManager(authenticationManager());
-
-            // only consider the tokens when configured for login
-            if (loginIdentityProvider != null) {
-                jwtAuthenticationFilter.setJwtService(jwtService);
-            }
+            jwtAuthenticationFilter.setJwtService(jwtService);
         }
         return jwtAuthenticationFilter;
+    }
+
+    @Bean
+    public OtpAuthenticationFilter otpFilterBean() throws Exception {
+        if (otpAuthenticationFilter == null) {
+            otpAuthenticationFilter = new OtpAuthenticationFilter();
+            otpAuthenticationFilter.setProperties(properties);
+            otpAuthenticationFilter.setAuthenticationManager(authenticationManager());
+            otpAuthenticationFilter.setOtpService(otpService);
+        }
+        return otpAuthenticationFilter;
     }
 
     @Bean
@@ -157,8 +175,8 @@ public class NiFiWebApiSecurityConfiguration extends WebSecurityConfigurerAdapte
     }
 
     @Autowired
-    public void setUserDetailsService(AuthenticationUserDetailsService<NiFiAuthortizationRequestToken> userDetailsService) {
-        this.userDetailsService = userDetailsService;
+    public void setUserDetailsService(AuthenticationUserDetailsService<NiFiAuthorizationRequestToken> userDetailsService) {
+        this.authenticationUserDetailsService = userDetailsService;
     }
 
     @Autowired
@@ -177,8 +195,8 @@ public class NiFiWebApiSecurityConfiguration extends WebSecurityConfigurerAdapte
     }
 
     @Autowired
-    public void setLoginIdentityProvider(LoginIdentityProvider loginIdentityProvider) {
-        this.loginIdentityProvider = loginIdentityProvider;
+    public void setOtpService(OtpService otpService) {
+        this.otpService = otpService;
     }
 
     @Autowired
@@ -190,5 +208,4 @@ public class NiFiWebApiSecurityConfiguration extends WebSecurityConfigurerAdapte
     public void setCertificateIdentityProvider(X509IdentityProvider certificateIdentityProvider) {
         this.certificateIdentityProvider = certificateIdentityProvider;
     }
-
 }

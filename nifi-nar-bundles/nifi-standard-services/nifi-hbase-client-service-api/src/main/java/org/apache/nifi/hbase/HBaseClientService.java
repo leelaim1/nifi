@@ -36,7 +36,9 @@ public interface HBaseClientService extends ControllerService {
 
     PropertyDescriptor HADOOP_CONF_FILES = new PropertyDescriptor.Builder()
             .name("Hadoop Configuration Files")
-            .description("Comma-separated list of Hadoop Configuration files, such as hbase-site.xml, including full paths to the files.")
+            .description("Comma-separated list of Hadoop Configuration files," +
+              " such as hbase-site.xml and core-site.xml for kerberos, " +
+              "including full paths to the files.")
             .addValidator(new ConfigFilesValidator())
             .build();
 
@@ -95,5 +97,37 @@ public interface HBaseClientService extends ControllerService {
      * @throws IOException thrown when there are communication errors with HBase
      */
     void scan(String tableName, Collection<Column> columns, String filterExpression, long minTime, ResultHandler handler) throws IOException;
+
+    /**
+     * Converts the given boolean to it's byte representation.
+     *
+     * @param b a boolean
+     * @return the boolean represented as bytes
+     */
+    byte[] toBytes(boolean b);
+
+    /**
+     * Converts the given long to it's byte representation.
+     *
+     * @param l a long
+     * @return the long represented as bytes
+     */
+    byte[] toBytes(long l);
+
+    /**
+     * Converts the given double to it's byte representation.
+     *
+     * @param d a double
+     * @return the double represented as bytes
+     */
+    byte[] toBytes(double d);
+
+    /**
+     * Converts the given string to it's byte representation.
+     *
+     * @param s a string
+     * @return the string represented as bytes
+     */
+    byte[] toBytes(String s);
 
 }

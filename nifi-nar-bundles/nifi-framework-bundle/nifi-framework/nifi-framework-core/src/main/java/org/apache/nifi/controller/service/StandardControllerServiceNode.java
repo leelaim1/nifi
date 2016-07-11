@@ -17,9 +17,12 @@
 package org.apache.nifi.controller.service;
 
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +34,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.apache.nifi.annotation.lifecycle.OnDisabled;
 import org.apache.nifi.annotation.lifecycle.OnEnabled;
+import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.controller.AbstractConfiguredComponent;
 import org.apache.nifi.controller.ConfigurationContext;
@@ -43,6 +47,7 @@ import org.apache.nifi.controller.exception.ComponentLifeCycleException;
 import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.nar.NarCloseable;
 import org.apache.nifi.processor.SimpleProcessLogger;
+import org.apache.nifi.registry.VariableRegistry;
 import org.apache.nifi.util.ReflectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,7 +59,7 @@ public class StandardControllerServiceNode extends AbstractConfiguredComponent i
     private final ControllerService proxedControllerService;
     private final ControllerService implementation;
     private final ControllerServiceProvider serviceProvider;
-
+    private final VariableRegistry variableRegistry;
     private final AtomicReference<ControllerServiceState> stateRef = new AtomicReference<>(ControllerServiceState.DISABLED);
 
     private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
@@ -67,12 +72,15 @@ public class StandardControllerServiceNode extends AbstractConfiguredComponent i
     private final AtomicBoolean active;
 
     public StandardControllerServiceNode(final ControllerService proxiedControllerService, final ControllerService implementation, final String id,
-            final ValidationContextFactory validationContextFactory, final ControllerServiceProvider serviceProvider) {
+                                         final ValidationContextFactory validationContextFactory, final ControllerServiceProvider serviceProvider,
+                                         final VariableRegistry variableRegistry) {
         super(implementation, id, validationContextFactory, serviceProvider);
         this.proxedControllerService = proxiedControllerService;
         this.implementation = implementation;
         this.serviceProvider = serviceProvider;
         this.active = new AtomicBoolean();
+        this.variableRegistry = variableRegistry;
+
     }
 
     @Override
@@ -104,6 +112,21 @@ public class StandardControllerServiceNode extends AbstractConfiguredComponent i
             writeLock.unlock();
         }
     }
+
+    @Override
+    public List<ControllerServiceNode> getRequiredControllerServices() {
+        Set<ControllerServiceNode> requiredServices = new HashSet<>();
+        for (Entry<PropertyDescriptor, String> pEntry : this.getProperties().entrySet()) {
+            PropertyDescriptor descriptor = pEntry.getKey();
+            if (descriptor.getControllerServiceDefinition() != null && descriptor.isRequired()) {
+                ControllerServiceNode rNode = this.serviceProvider.getControllerServiceNode(pEntry.getValue());
+                requiredServices.add(rNode);
+                requiredServices.addAll(rNode.getRequiredControllerServices());
+            }
+        }
+        return new ArrayList<>(requiredServices);
+    }
+
 
     @Override
     public void removeReference(final ConfiguredComponent referencingComponent) {
@@ -141,7 +164,7 @@ public class StandardControllerServiceNode extends AbstractConfiguredComponent i
     @SuppressWarnings("deprecation")
     private void onConfigured() {
         try (final NarCloseable x = NarCloseable.withNarLoader()) {
-            final ConfigurationContext configContext = new StandardConfigurationContext(this, serviceProvider, null);
+            final ConfigurationContext configContext = new StandardConfigurationContext(this, serviceProvider, null, variableRegistry);
             ReflectionUtils.invokeMethodsWithAnnotation(OnConfigured.class, implementation, configContext);
         } catch (final Exception e) {
             throw new ComponentLifeCycleException("Failed to invoke On-Configured Lifecycle methods of " + implementation, e);
@@ -219,6 +242,11 @@ public class StandardControllerServiceNode extends AbstractConfiguredComponent i
     }
 
     @Override
+    public void verifyCanClearState() {
+        verifyCanUpdate();
+    }
+
+    @Override
     public String getComments() {
         readLock.lock();
         try {
@@ -272,7 +300,7 @@ public class StandardControllerServiceNode extends AbstractConfiguredComponent i
             final Heartbeater heartbeater) {
         if (this.stateRef.compareAndSet(ControllerServiceState.DISABLED, ControllerServiceState.ENABLING)) {
             this.active.set(true);
-            final ConfigurationContext configContext = new StandardConfigurationContext(this, this.serviceProvider, null);
+            final ConfigurationContext configContext = new StandardConfigurationContext(this, this.serviceProvider, null, variableRegistry);
             scheduler.execute(new Runnable() {
                 @Override
                 public void run() {
@@ -337,7 +365,7 @@ public class StandardControllerServiceNode extends AbstractConfiguredComponent i
         }
 
         if (this.stateRef.compareAndSet(ControllerServiceState.ENABLED, ControllerServiceState.DISABLING)) {
-            final ConfigurationContext configContext = new StandardConfigurationContext(this, this.serviceProvider, null);
+            final ConfigurationContext configContext = new StandardConfigurationContext(this, this.serviceProvider, null, variableRegistry);
             scheduler.execute(new Runnable() {
                 @Override
                 public void run() {

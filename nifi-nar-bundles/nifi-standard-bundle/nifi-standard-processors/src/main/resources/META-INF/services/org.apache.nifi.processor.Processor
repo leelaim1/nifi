@@ -18,6 +18,7 @@ org.apache.nifi.processors.standard.CompressContent
 org.apache.nifi.processors.standard.ControlRate
 org.apache.nifi.processors.standard.ConvertCharacterSet
 org.apache.nifi.processors.standard.ConvertJSONToSQL
+org.apache.nifi.processors.standard.DebugFlow
 org.apache.nifi.processors.standard.DetectDuplicate
 org.apache.nifi.processors.standard.DistributeLoad
 org.apache.nifi.processors.standard.DuplicateFlowFile
@@ -42,11 +43,14 @@ org.apache.nifi.processors.standard.HashAttribute
 org.apache.nifi.processors.standard.HashContent
 org.apache.nifi.processors.standard.IdentifyMimeType
 org.apache.nifi.processors.standard.InvokeHTTP
+org.apache.nifi.processors.standard.JoltTransformJSON
 org.apache.nifi.processors.standard.GetJMSQueue
 org.apache.nifi.processors.standard.GetJMSTopic
 org.apache.nifi.processors.standard.ListFile
 org.apache.nifi.processors.standard.ListenHTTP
+org.apache.nifi.processors.standard.ListenRELP
 org.apache.nifi.processors.standard.ListenSyslog
+org.apache.nifi.processors.standard.ListenTCP
 org.apache.nifi.processors.standard.ListenUDP
 org.apache.nifi.processors.standard.ListSFTP
 org.apache.nifi.processors.standard.LogAttribute
@@ -63,6 +67,9 @@ org.apache.nifi.processors.standard.PutJMS
 org.apache.nifi.processors.standard.PutSFTP
 org.apache.nifi.processors.standard.PutSQL
 org.apache.nifi.processors.standard.PutSyslog
+org.apache.nifi.processors.standard.PutTCP
+org.apache.nifi.processors.standard.PutUDP
+org.apache.nifi.processors.standard.QueryDatabaseTable
 org.apache.nifi.processors.standard.ReplaceText
 org.apache.nifi.processors.standard.RouteText
 org.apache.nifi.processors.standard.ReplaceTextWithMapping
@@ -80,3 +87,4 @@ org.apache.nifi.processors.standard.TransformXml
 org.apache.nifi.processors.standard.UnpackContent
 org.apache.nifi.processors.standard.ValidateXml
 org.apache.nifi.processors.standard.ExecuteSQL
+org.apache.nifi.processors.standard.FetchDistributedMapCache

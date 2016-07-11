@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
+import org.apache.nifi.controller.Heartbeater;
 import org.apache.nifi.controller.ProcessScheduler;
 import org.apache.nifi.controller.StandardFlowFileQueue;
 import org.apache.nifi.controller.queue.FlowFileQueue;
@@ -70,7 +71,7 @@ public final class StandardConnection implements Connection {
         relationships = new AtomicReference<>(Collections.unmodifiableCollection(builder.relationships));
         scheduler = builder.scheduler;
         flowFileQueue = new StandardFlowFileQueue(id, this, builder.flowFileRepository, builder.provenanceRepository, builder.resourceClaimManager,
-            scheduler, builder.swapManager, builder.eventReporter, NiFiProperties.getInstance().getQueueSwapThreshold());
+            scheduler, builder.swapManager, builder.eventReporter, NiFiProperties.getInstance().getQueueSwapThreshold(), builder.heartbeater);
         hashCode = new HashCodeBuilder(7, 67).append(id).toHashCode();
     }
 
@@ -269,6 +270,7 @@ public final class StandardConnection implements Connection {
         private FlowFileRepository flowFileRepository;
         private ProvenanceEventRepository provenanceRepository;
         private ResourceClaimManager resourceClaimManager;
+        private Heartbeater heartbeater;
 
         public Builder(final ProcessScheduler scheduler) {
             this.scheduler = scheduler;
@@ -301,6 +303,11 @@ public final class StandardConnection implements Connection {
 
         public Builder name(final String name) {
             this.name = name;
+            return this;
+        }
+
+        public Builder heartbeater(final Heartbeater heartbeater) {
+            this.heartbeater = heartbeater;
             return this;
         }
 
@@ -390,6 +397,13 @@ public final class StandardConnection implements Connection {
         if (source.isRunning()) {
             if (!ConnectableType.FUNNEL.equals(source.getConnectableType())) {
                 throw new IllegalStateException("Source of Connection (" + source + ") is running");
+            }
+        }
+
+        final Connectable dest = destination.get();
+        if (dest.isRunning()) {
+            if (!ConnectableType.FUNNEL.equals(dest.getConnectableType())) {
+                throw new IllegalStateException("Destination of Connection (" + dest + ") is running");
             }
         }
     }

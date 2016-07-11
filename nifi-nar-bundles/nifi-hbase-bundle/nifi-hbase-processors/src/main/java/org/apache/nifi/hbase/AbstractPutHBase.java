@@ -17,7 +17,14 @@
 package org.apache.nifi.hbase;
 
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
 import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.hbase.put.PutFlowFile;
@@ -27,12 +34,6 @@ import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Base class for processors that put data to HBase.
@@ -91,6 +92,13 @@ public abstract class AbstractPutHBase extends AbstractProcessor {
             .description("A FlowFile is routed to this relationship if it cannot be sent to HBase")
             .build();
 
+    protected HBaseClientService clientService;
+
+    @OnScheduled
+    public void onScheduled(final ProcessContext context) {
+        clientService = context.getProperty(HBASE_CLIENT_SERVICE).asControllerService(HBaseClientService.class);
+    }
+
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) throws ProcessException {
         final int batchSize = context.getProperty(BATCH_SIZE).asInteger();
@@ -134,11 +142,10 @@ public abstract class AbstractPutHBase extends AbstractProcessor {
 
         final long start = System.nanoTime();
         final List<PutFlowFile> successes = new ArrayList<>();
-        final HBaseClientService hBaseClientService = context.getProperty(HBASE_CLIENT_SERVICE).asControllerService(HBaseClientService.class);
 
         for (Map.Entry<String, List<PutFlowFile>> entry : tablePuts.entrySet()) {
             try {
-                hBaseClientService.put(entry.getKey(), entry.getValue());
+                clientService.put(entry.getKey(), entry.getValue());
                 successes.addAll(entry.getValue());
             } catch (Exception e) {
                 getLogger().error(e.getMessage(), e);

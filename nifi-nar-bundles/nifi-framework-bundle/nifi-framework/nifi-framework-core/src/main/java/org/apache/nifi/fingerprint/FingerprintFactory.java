@@ -248,15 +248,61 @@ public final class FingerprintFactory {
 
         final Element controllerServicesElem = DomUtils.getChild(flowControllerElem, "controllerServices");
         if (controllerServicesElem != null) {
+            final List<ControllerServiceDTO> serviceDtos = new ArrayList<>();
             for (final Element serviceElem : DomUtils.getChildElementsByTagName(controllerServicesElem, "controllerService")) {
-                addControllerServiceFingerprint(builder, serviceElem);
+                final ControllerServiceDTO dto = FlowFromDOMFactory.getControllerService(serviceElem, encryptor);
+                serviceDtos.add(dto);
+            }
+
+            Collections.sort(serviceDtos, new Comparator<ControllerServiceDTO>() {
+                @Override
+                public int compare(final ControllerServiceDTO o1, final ControllerServiceDTO o2) {
+                    if (o1 == null && o2 == null) {
+                        return 0;
+                    }
+                    if (o1 == null && o2 != null) {
+                        return 1;
+                    }
+                    if (o1 != null && o2 == null) {
+                        return -1;
+                    }
+
+                    return o1.getId().compareTo(o2.getId());
+                }
+            });
+
+            for (final ControllerServiceDTO dto : serviceDtos) {
+                addControllerServiceFingerprint(builder, dto);
             }
         }
 
         final Element reportingTasksElem = DomUtils.getChild(flowControllerElem, "reportingTasks");
         if (reportingTasksElem != null) {
+            final List<ReportingTaskDTO> reportingTaskDtos = new ArrayList<>();
             for (final Element taskElem : DomUtils.getChildElementsByTagName(reportingTasksElem, "reportingTask")) {
-                addReportingTaskFingerprint(builder, taskElem);
+                final ReportingTaskDTO dto = FlowFromDOMFactory.getReportingTask(taskElem, encryptor);
+                reportingTaskDtos.add(dto);
+            }
+
+            Collections.sort(reportingTaskDtos, new Comparator<ReportingTaskDTO>() {
+                @Override
+                public int compare(final ReportingTaskDTO o1, final ReportingTaskDTO o2) {
+                    if (o1 == null && o2 == null) {
+                        return 0;
+                    }
+                    if (o1 == null && o2 != null) {
+                        return 1;
+                    }
+                    if (o1 != null && o2 == null) {
+                        return -1;
+                    }
+
+                    return o1.getId().compareTo(o2.getId());
+                }
+            });
+
+            for (final ReportingTaskDTO dto : reportingTaskDtos) {
+                addReportingTaskFingerprint(builder, dto);
             }
         }
 
@@ -797,11 +843,13 @@ public final class FingerprintFactory {
         // destination type
         appendFirstValue(builder, DomUtils.getChildNodesByTagName(connectionElem, "destinationType"));
 
+        appendFirstValue(builder, DomUtils.getChildNodesByTagName(connectionElem, "name"));
+
         // relationships
         final NodeList relationshipElems = DomUtils.getChildNodesByTagName(connectionElem, "relationship");
         final List<Element> sortedRelationshipElems = sortElements(relationshipElems, getConnectionRelationshipsComparator());
         for (final Element relationshipElem : sortedRelationshipElems) {
-            addConnectionRelationshipFingerprint(builder, relationshipElem);
+            builder.append(getValue(relationshipElem, "NO_VALUE"));
         }
 
         return builder;
@@ -826,12 +874,6 @@ public final class FingerprintFactory {
         return builder;
     }
 
-    private StringBuilder addConnectionRelationshipFingerprint(final StringBuilder builder, final Element relationshipElem) throws FingerprintException {
-        // destination type
-        appendFirstValue(builder, DomUtils.getChildNodesByTagName(relationshipElem, "relationship"));
-        return builder;
-    }
-
     private StringBuilder addFunnelFingerprint(final StringBuilder builder, final Element funnelElem) throws FingerprintException {
         // id
         appendFirstValue(builder, DomUtils.getChildNodesByTagName(funnelElem, "id"));
@@ -841,11 +883,6 @@ public final class FingerprintFactory {
     private StringBuilder addFunnelFingerprint(final StringBuilder builder, final FunnelDTO funnel) {
         builder.append(funnel.getId());
         return builder;
-    }
-
-    private void addControllerServiceFingerprint(final StringBuilder builder, final Element controllerServiceElem) {
-        final ControllerServiceDTO dto = FlowFromDOMFactory.getControllerService(controllerServiceElem, encryptor);
-        addControllerServiceFingerprint(builder, dto);
     }
 
     private void addControllerServiceFingerprint(final StringBuilder builder, final ControllerServiceDTO dto) {
@@ -870,11 +907,6 @@ public final class FingerprintFactory {
                 builder.append(propName).append("=").append(propValue);
             }
         }
-    }
-
-    private void addReportingTaskFingerprint(final StringBuilder builder, final Element element) {
-        final ReportingTaskDTO dto = FlowFromDOMFactory.getReportingTask(element, encryptor);
-        addReportingTaskFingerprint(builder, dto);
     }
 
     private void addReportingTaskFingerprint(final StringBuilder builder, final ReportingTaskDTO dto) {

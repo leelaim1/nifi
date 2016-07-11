@@ -16,6 +16,9 @@
  */
 package org.apache.nifi.util;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -33,9 +36,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class NiFiProperties extends Properties {
 
@@ -71,6 +71,7 @@ public class NiFiProperties extends Properties {
     public static final String ADMINISTRATIVE_YIELD_DURATION = "nifi.administrative.yield.duration";
     public static final String PERSISTENT_STATE_DIRECTORY = "nifi.persistent.state.directory";
     public static final String BORED_YIELD_DURATION = "nifi.bored.yield.duration";
+    public static final String PROCESSOR_SCHEDULING_TIMEOUT = "nifi.processor.scheduling.timeout";
 
     // content repository properties
     public static final String REPOSITORY_CONTENT_PREFIX = "nifi.content.repository.directory.";
@@ -188,6 +189,19 @@ public class NiFiProperties extends Properties {
 
     // kerberos properties
     public static final String KERBEROS_KRB5_FILE = "nifi.kerberos.krb5.file";
+    public static final String KERBEROS_SERVICE_PRINCIPAL = "nifi.kerberos.service.principal";
+    public static final String KERBEROS_KEYTAB_LOCATION = "nifi.kerberos.keytab.location";
+    public static final String KERBEROS_AUTHENTICATION_EXPIRATION = "nifi.kerberos.authentication.expiration";
+
+    // state management
+    public static final String STATE_MANAGEMENT_CONFIG_FILE = "nifi.state.management.configuration.file";
+    public static final String STATE_MANAGEMENT_LOCAL_PROVIDER_ID = "nifi.state.management.provider.local";
+    public static final String STATE_MANAGEMENT_CLUSTER_PROVIDER_ID = "nifi.state.management.provider.cluster";
+    public static final String STATE_MANAGEMENT_START_EMBEDDED_ZOOKEEPER = "nifi.state.management.embedded.zookeeper.start";
+    public static final String STATE_MANAGEMENT_ZOOKEEPER_PROPERTIES = "nifi.state.management.embedded.zookeeper.properties";
+
+    // expression language properties
+    public static final String VARIABLE_REGISTRY_PROPERTIES = "nifi.variable.registry.properties";
 
     // defaults
     public static final String DEFAULT_TITLE = "NiFi";
@@ -235,6 +249,14 @@ public class NiFiProperties extends Properties {
     public static final String DEFAULT_CLUSTER_MANAGER_FLOW_RETRIEVAL_DELAY = "5 sec";
     public static final int DEFAULT_CLUSTER_MANAGER_PROTOCOL_THREADS = 10;
     public static final String DEFAULT_CLUSTER_MANAGER_SAFEMODE_DURATION = "0 sec";
+
+    // state management defaults
+
+    public static final String DEFAULT_STATE_MANAGEMENT_CONFIG_FILE = "conf/state-management.xml";
+
+    // Kerberos defaults
+    public static final String DEFAULT_KERBEROS_AUTHENTICATION_EXPIRATION = "12 hours";
+
 
     private NiFiProperties() {
         super();
@@ -529,6 +551,7 @@ public class NiFiProperties extends Properties {
         return shouldSupport;
     }
 
+    @SuppressWarnings("unchecked")
     public Set<String> getAnonymousAuthorities() {
         final Set<String> authorities;
 
@@ -849,6 +872,55 @@ public class NiFiProperties extends Properties {
         }
     }
 
+    public String getKerberosServicePrincipal() {
+        final String servicePrincipal = getProperty(KERBEROS_SERVICE_PRINCIPAL);
+        if (!StringUtils.isBlank(servicePrincipal)) {
+            return servicePrincipal.trim();
+        } else {
+            return null;
+        }
+    }
+
+    public String getKerberosKeytabLocation() {
+        final String keytabLocation = getProperty(KERBEROS_KEYTAB_LOCATION);
+        if (!StringUtils.isBlank(keytabLocation)) {
+            return keytabLocation.trim();
+        } else {
+            return null;
+        }
+    }
+
+    public String getKerberosAuthenticationExpiration() {
+        final String authenticationExpirationString = getProperty(KERBEROS_AUTHENTICATION_EXPIRATION, DEFAULT_KERBEROS_AUTHENTICATION_EXPIRATION);
+        if (!StringUtils.isBlank(authenticationExpirationString)) {
+            return authenticationExpirationString.trim();
+        } else {
+            return null;
+        }
+    }
+
+    /**
+     * Returns true if the Kerberos service principal and keytab location properties are populated.
+     *
+     * @return true if Kerberos service support is enabled
+     */
+    public boolean isKerberosServiceSupportEnabled() {
+        return !StringUtils.isBlank(getKerberosServicePrincipal()) && !StringUtils.isBlank(getKerberosKeytabLocation());
+    }
+
+    /**
+     * Returns true if client certificates are required for REST API. Determined if the following conditions are all true:
+     *
+     * - login identity provider is not populated
+     * - anonymous authorities is empty
+     * - Kerberos service support is not enabled
+     *
+     * @return true if client certificates are required for access to the REST API
+     */
+    public boolean isClientAuthRequiredForRestApi() {
+        return StringUtils.isBlank(getProperty(NiFiProperties.SECURITY_USER_LOGIN_IDENTITY_PROVIDER)) && getAnonymousAuthorities().isEmpty() && !isKerberosServiceSupportEnabled();
+    }
+
     public InetSocketAddress getNodeApiAddress() {
 
         final String rawScheme = getClusterProtocolManagerToNodeApiScheme();
@@ -985,4 +1057,51 @@ public class NiFiProperties extends Properties {
     public String getBoredYieldDuration() {
         return getProperty(BORED_YIELD_DURATION, DEFAULT_BORED_YIELD_DURATION);
     }
+
+    public File getStateManagementConfigFile() {
+        return new File(getProperty(STATE_MANAGEMENT_CONFIG_FILE, DEFAULT_STATE_MANAGEMENT_CONFIG_FILE));
+    }
+
+    public String getLocalStateProviderId() {
+        return getProperty(STATE_MANAGEMENT_LOCAL_PROVIDER_ID);
+    }
+
+    public String getClusterStateProviderId() {
+        return getProperty(STATE_MANAGEMENT_CLUSTER_PROVIDER_ID);
+    }
+
+    public File getEmbeddedZooKeeperPropertiesFile() {
+        final String filename = getProperty(STATE_MANAGEMENT_ZOOKEEPER_PROPERTIES);
+        return filename == null ? null : new File(filename);
+    }
+
+    public boolean isStartEmbeddedZooKeeper() {
+        return Boolean.parseBoolean(getProperty(STATE_MANAGEMENT_START_EMBEDDED_ZOOKEEPER));
+    }
+
+    public String getVariableRegistryProperties(){
+        return getProperty(VARIABLE_REGISTRY_PROPERTIES);
+    }
+
+    public Path[] getVariableRegistryPropertiesPaths() {
+        final List<Path> vrPropertiesPaths = new ArrayList<>();
+        final String vrPropertiesFiles = getVariableRegistryProperties();
+
+        if(!StringUtils.isEmpty(vrPropertiesFiles)) {
+            final List<String> vrPropertiesFileList = Arrays.asList(vrPropertiesFiles.split(","));
+
+            for (final String propertiesFile : vrPropertiesFileList) {
+                final String trimmed = propertiesFile.trim();
+                if (!trimmed.isEmpty()) {
+                    vrPropertiesPaths.add(Paths.get(trimmed));
+                }
+            }
+
+            return vrPropertiesPaths.toArray(new Path[vrPropertiesPaths.size()]);
+        } else {
+            return null;
+        }
+    }
+
+
 }

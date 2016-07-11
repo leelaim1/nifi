@@ -25,22 +25,20 @@ import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.SocketChannel;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
 import java.util.concurrent.TimeUnit;
-
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLEngineResult.Status;
 import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLPeerUnverifiedException;
-import javax.security.cert.CertificateExpiredException;
-import javax.security.cert.CertificateNotYetValidException;
-import javax.security.cert.X509Certificate;
-
 import org.apache.nifi.remote.exception.TransmissionDisabledException;
 import org.apache.nifi.remote.io.socket.BufferStateManager;
 import org.apache.nifi.remote.io.socket.BufferStateManager.Direction;
-
+import org.apache.nifi.security.util.CertificateUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -85,10 +83,6 @@ public class SSLSocketChannel implements Closeable {
     }
 
     public SSLSocketChannel(final SSLContext sslContext, final SocketChannel socketChannel, final boolean client) throws IOException {
-        this(sslContext.createSSLEngine(), socketChannel, client);
-    }
-
-    public SSLSocketChannel(final SSLEngine sslEngine, final SocketChannel socketChannel, final boolean client) throws IOException {
         if (!socketChannel.isConnected()) {
             throw new IllegalArgumentException("Cannot pass an un-connected SocketChannel");
         }
@@ -100,9 +94,29 @@ public class SSLSocketChannel implements Closeable {
         this.hostname = socket.getInetAddress().getHostName();
         this.port = socket.getPort();
 
-        this.engine = sslEngine;
+        this.engine = sslContext.createSSLEngine();
         this.engine.setUseClientMode(client);
         this.engine.setNeedClientAuth(true);
+
+        streamInManager = new BufferStateManager(ByteBuffer.allocate(engine.getSession().getPacketBufferSize()));
+        streamOutManager = new BufferStateManager(ByteBuffer.allocate(engine.getSession().getPacketBufferSize()));
+        appDataManager = new BufferStateManager(ByteBuffer.allocate(engine.getSession().getApplicationBufferSize()));
+    }
+
+    public SSLSocketChannel(final SSLEngine sslEngine, final SocketChannel socketChannel) throws IOException {
+        if (!socketChannel.isConnected()) {
+            throw new IllegalArgumentException("Cannot pass an un-connected SocketChannel");
+        }
+
+        this.channel = socketChannel;
+
+        this.socketAddress = socketChannel.getRemoteAddress();
+        final Socket socket = socketChannel.socket();
+        this.hostname = socket.getInetAddress().getHostName();
+        this.port = socket.getPort();
+
+        // don't set useClientMode or needClientAuth, use the engine as is and let the caller configure it
+        this.engine = sslEngine;
 
         streamInManager = new BufferStateManager(ByteBuffer.allocate(engine.getSession().getPacketBufferSize()));
         streamOutManager = new BufferStateManager(ByteBuffer.allocate(engine.getSession().getPacketBufferSize()));
@@ -117,7 +131,7 @@ public class SSLSocketChannel implements Closeable {
         return timeoutMillis;
     }
 
-    public void connect() throws SSLHandshakeException, IOException {
+    public void connect() throws IOException {
         try {
             channel.configureBlocking(false);
             if (!channel.isConnected()) {
@@ -161,13 +175,13 @@ public class SSLSocketChannel implements Closeable {
         }
     }
 
-    public String getDn() throws CertificateExpiredException, CertificateNotYetValidException, SSLPeerUnverifiedException {
-        final X509Certificate[] certs = engine.getSession().getPeerCertificateChain();
+    public String getDn() throws CertificateException, SSLPeerUnverifiedException {
+        final Certificate[] certs = engine.getSession().getPeerCertificates();
         if (certs == null || certs.length == 0) {
             throw new SSLPeerUnverifiedException("No certificates found");
         }
 
-        final X509Certificate cert = certs[0];
+        final X509Certificate cert = CertificateUtils.convertAbstractX509Certificate(certs[0]);
         cert.checkValidity();
         return cert.getSubjectDN().getName().trim();
     }
@@ -214,7 +228,7 @@ public class SSLSocketChannel implements Closeable {
                         final ByteBuffer appData = appDataManager.prepareForWrite(engine.getSession().getApplicationBufferSize());
 
                         // Read handshake response from other side
-                        logger.trace("{} Unwrapping: {} to {}", new Object[]{this, readableDataIn, appData});
+                        logger.trace("{} Unwrapping: {} to {}", this, readableDataIn, appData);
                         SSLEngineResult handshakeResponseResult = engine.unwrap(readableDataIn, appData);
                         logger.trace("{} Handshake response after unwrapping: {}", this, handshakeResponseResult);
 
@@ -386,7 +400,7 @@ public class SSLSocketChannel implements Closeable {
             final ByteBuffer appDataBuffer = appDataManager.prepareForWrite(engine.getSession().getApplicationBufferSize());
             try {
                 SSLEngineResult unwrapResponse = engine.unwrap(streamInBuffer, appDataBuffer);
-                logger.trace("{} When checking if closed, (handshake={}) Unwrap response: {}", new Object[]{this, handshaking, unwrapResponse});
+                logger.trace("{} When checking if closed, (handshake={}) Unwrap response: {}", this, handshaking, unwrapResponse);
                 if (unwrapResponse.getStatus().equals(Status.CLOSED)) {
                     // Drain the incoming TCP buffer
                     final ByteBuffer discardBuffer = ByteBuffer.allocate(8192);
@@ -470,7 +484,7 @@ public class SSLSocketChannel implements Closeable {
 
             final int bytesCopied = appDataRemaining - appDataBuffer.remaining();
             logger.trace("{} Copied {} ({}) bytes from unencrypted application buffer to user space",
-                    new Object[]{this, bytesToCopy, bytesCopied});
+                    this, bytesToCopy, bytesCopied);
             return bytesCopied;
         }
         return 0;
@@ -539,7 +553,7 @@ public class SSLSocketChannel implements Closeable {
             SSLEngineResult unwrapResponse = null;
             final ByteBuffer appDataBuffer = appDataManager.prepareForWrite(engine.getSession().getApplicationBufferSize());
             unwrapResponse = engine.unwrap(streamInBuffer, appDataBuffer);
-            logger.trace("{} When reading data, (handshake={}) Unwrap response: {}", new Object[]{this, handshaking, unwrapResponse});
+            logger.trace("{} When reading data, (handshake={}) Unwrap response: {}", this, handshaking, unwrapResponse);
 
             switch (unwrapResponse.getStatus()) {
                 case BUFFER_OVERFLOW:

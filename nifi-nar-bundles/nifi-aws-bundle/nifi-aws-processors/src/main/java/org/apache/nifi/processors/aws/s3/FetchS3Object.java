@@ -46,7 +46,7 @@ import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.S3Object;
 
 @SupportsBatching
-@SeeAlso({PutS3Object.class, DeleteS3Object.class})
+@SeeAlso({PutS3Object.class, DeleteS3Object.class, ListS3.class})
 @InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({"Amazon", "S3", "AWS", "Get", "Fetch"})
 @CapabilityDescription("Retrieves the contents of an S3 Object and writes it to the content of a FlowFile")
@@ -61,6 +61,7 @@ import com.amazonaws.services.s3.model.S3Object;
     @WritesAttribute(attribute = "s3.etag", description = "The ETag that can be used to see if the file has changed"),
     @WritesAttribute(attribute = "s3.expirationTime", description = "If the file has an expiration date, this attribute will be set, containing the milliseconds since epoch in UTC time"),
     @WritesAttribute(attribute = "s3.expirationTimeRuleId", description = "The ID of the rule that dictates this object's expiration time"),
+    @WritesAttribute(attribute = "s3.sseAlgorithm", description = "The server side encryption algorithm of the object"),
     @WritesAttribute(attribute = "s3.version", description = "The version of the S3 object"),})
 public class FetchS3Object extends AbstractS3Processor {
 
@@ -73,7 +74,8 @@ public class FetchS3Object extends AbstractS3Processor {
             .build();
 
     public static final List<PropertyDescriptor> properties = Collections.unmodifiableList(
-            Arrays.asList(BUCKET, KEY, REGION, ACCESS_KEY, SECRET_KEY, CREDENTIALS_FILE, TIMEOUT, VERSION_ID, SSL_CONTEXT_SERVICE, ENDPOINT_OVERRIDE));
+            Arrays.asList(BUCKET, KEY, REGION, ACCESS_KEY, SECRET_KEY, CREDENTIALS_FILE, AWS_CREDENTIALS_PROVIDER_SERVICE, TIMEOUT, VERSION_ID,
+                SSL_CONTEXT_SERVICE, ENDPOINT_OVERRIDE, PROXY_HOST, PROXY_HOST_PORT));
 
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
@@ -135,6 +137,9 @@ public class FetchS3Object extends AbstractS3Processor {
             }
             if (metadata.getUserMetadata() != null) {
                 attributes.putAll(metadata.getUserMetadata());
+            }
+            if (metadata.getSSEAlgorithm() != null) {
+                attributes.put("s3.sseAlgorithm", metadata.getSSEAlgorithm());
             }
             if (metadata.getVersionId() != null) {
                 attributes.put("s3.version", metadata.getVersionId());

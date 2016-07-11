@@ -262,13 +262,14 @@ public class SimpleProcessLogger implements ProcessorLog {
         }
 
         msg = "{} " + msg;
-        Object[] os = {component, t.toString()};
+        Object[] os = t == null ? new Object[]{component} : new Object[]{component, t.toString()};
         logger.error(msg, os);
-        if (logger.isDebugEnabled()) {
+        if (t != null){
             logger.error("", t);
+            logRepository.addLogMessage(LogLevel.ERROR, msg, os, t);
+        } else {
+            logRepository.addLogMessage(LogLevel.ERROR, msg, os);
         }
-
-        logRepository.addLogMessage(LogLevel.ERROR, msg, os, t);
     }
 
     @Override
@@ -289,26 +290,7 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void error(String msg) {
-        if (!isErrorEnabled()) {
-            return;
-        }
-
-        msg = "{} " + msg;
-        final Object[] os = {component};
-
-        logger.error(msg, os);
-        logRepository.addLogMessage(LogLevel.ERROR, msg, os);
-    }
-
-    private Object[] addProcessorAndThrowable(final Object[] os, final Throwable t) {
-        final Object[] modifiedArgs = new Object[os.length + 2];
-        modifiedArgs[0] = component.toString();
-        for (int i = 0; i < os.length; i++) {
-            modifiedArgs[i + 1] = os[i];
-        }
-        modifiedArgs[modifiedArgs.length - 1] = (t == null) ? "" : t.toString();
-
-        return modifiedArgs;
+        this.error(msg, (Throwable) null);
     }
 
     @Override
@@ -321,10 +303,19 @@ public class SimpleProcessLogger implements ProcessorLog {
         msg = "{} " + msg + ": {}";
 
         logger.error(msg, os);
-        if (logger.isDebugEnabled()) {
-            logger.error("", t);
-        }
+        logger.error("", t);
         logRepository.addLogMessage(LogLevel.ERROR, msg, os, t);
+    }
+
+    private Object[] addProcessorAndThrowable(final Object[] os, final Throwable t) {
+        final Object[] modifiedArgs = new Object[os.length + 2];
+        modifiedArgs[0] = component.toString();
+        for (int i = 0; i < os.length; i++) {
+            modifiedArgs[i + 1] = os[i];
+        }
+        modifiedArgs[modifiedArgs.length - 1] = (t == null) ? "" : t.toString();
+
+        return modifiedArgs;
     }
 
     @Override
@@ -380,6 +371,94 @@ public class SimpleProcessLogger implements ProcessorLog {
 
         logger.debug(msg, os);
         logRepository.addLogMessage(LogLevel.DEBUG, msg, os);
+    }
+
+    @Override
+    public void log(LogLevel level, String msg, Throwable t) {
+        switch (level) {
+            case DEBUG:
+                debug(msg, t);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg, t);
+                break;
+            case INFO:
+                info(msg, t);
+                break;
+            case TRACE:
+                trace(msg, t);
+                break;
+            case WARN:
+                warn(msg, t);
+                break;
+        }
+    }
+
+    @Override
+    public void log(LogLevel level, String msg, Object[] os) {
+        switch (level) {
+            case DEBUG:
+                debug(msg, os);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg, os);
+                break;
+            case INFO:
+                info(msg, os);
+                break;
+            case TRACE:
+                trace(msg, os);
+                break;
+            case WARN:
+                warn(msg, os);
+                break;
+        }
+    }
+
+    @Override
+    public void log(LogLevel level, String msg) {
+        switch (level) {
+            case DEBUG:
+                debug(msg);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg);
+                break;
+            case INFO:
+                info(msg);
+                break;
+            case TRACE:
+                trace(msg);
+                break;
+            case WARN:
+                warn(msg);
+                break;
+        }
+    }
+
+    @Override
+    public void log(LogLevel level, String msg, Object[] os, Throwable t) {
+        switch (level) {
+            case DEBUG:
+                debug(msg, os, t);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg, os, t);
+                break;
+            case INFO:
+                info(msg, os, t);
+                break;
+            case TRACE:
+                trace(msg, os, t);
+                break;
+            case WARN:
+                warn(msg, os, t);
+                break;
+        }
     }
 
 }

@@ -84,6 +84,7 @@ import org.slf4j.LoggerFactory;
 public class FileSystemRepository implements ContentRepository {
 
     public static final int SECTIONS_PER_CONTAINER = 1024;
+    public static final long MIN_CLEANUP_INTERVAL_MILLIS = 1000;
     public static final String ARCHIVE_DIR_NAME = "archive";
     public static final Pattern MAX_ARCHIVE_SIZE_PATTERN = Pattern.compile("\\d{1,2}%");
     private static final Logger LOG = LoggerFactory.getLogger(FileSystemRepository.class);
@@ -226,17 +227,8 @@ public class FileSystemRepository implements ContentRepository {
             executor.scheduleWithFixedDelay(new ArchiveOrDestroyDestructableClaims(), 1, 1, TimeUnit.SECONDS);
         }
 
-        final String archiveCleanupFrequency = properties.getProperty(NiFiProperties.CONTENT_ARCHIVE_CLEANUP_FREQUENCY);
-        final long cleanupMillis;
-        if (archiveCleanupFrequency == null) {
-            cleanupMillis = 1000L;
-        } else {
-            try {
-                cleanupMillis = FormatUtils.getTimeDuration(archiveCleanupFrequency.trim(), TimeUnit.MILLISECONDS);
-            } catch (final Exception e) {
-                throw new RuntimeException("Invalid value set for property " + NiFiProperties.CONTENT_ARCHIVE_CLEANUP_FREQUENCY);
-            }
-        }
+        final long cleanupMillis = this.determineCleanupInterval(properties);
+
         for (final Map.Entry<String, Path> containerEntry : containers.entrySet()) {
             final String containerName = containerEntry.getKey();
             final Path containerPath = containerEntry.getValue();
@@ -548,6 +540,15 @@ public class FileSystemRepository implements ContentRepository {
                 resourceClaim = resourceClaimManager.newResourceClaim(containerName, section, claimId, lossTolerant);
                 resourceOffset = 0L;
                 LOG.debug("Creating new Resource Claim {}", resourceClaim);
+
+                // we always append because there may be another ContentClaim using the same resource claim.
+                // However, we know that we will never write to the same claim from two different threads
+                // at the same time because we will call create() to get the claim before we write to it,
+                // and when we call create(), it will remove it from the Queue, which means that no other
+                // thread will get the same Claim until we've finished writing to it.
+                final File file = getPath(resourceClaim).toFile();
+                ByteCountingOutputStream claimStream = new SynchronizedByteCountingOutputStream(new FileOutputStream(file, true), file.length());
+                writableClaimStreams.put(resourceClaim, claimStream);
             } else {
                 resourceClaim = pair.getClaim();
                 resourceOffset = pair.getLength();
@@ -625,6 +626,16 @@ public class FileSystemRepository implements ContentRepository {
         try {
             path = getPath(claim);
         } catch (final ContentNotFoundException cnfe) {
+        }
+
+        // Ensure that we have no writable claim streams for this resource claim
+        final ByteCountingOutputStream bcos = writableClaimStreams.remove(claim);
+        if (bcos != null) {
+            try {
+                bcos.close();
+            } catch (final IOException e) {
+                LOG.warn("Failed to close Output Stream for {} due to {}", claim, e);
+            }
         }
 
         final File file = path.toFile();
@@ -849,25 +860,8 @@ public class FileSystemRepository implements ContentRepository {
 
         final ResourceClaim resourceClaim = claim.getResourceClaim();
 
-        // we always append because there may be another ContentClaim using the same resource claim.
-        // However, we know that we will never write to the same claim from two different threads
-        // at the same time because we will call create() to get the claim before we write to it,
-        // and when we call create(), it will remove it from the Queue, which means that no other
-        // thread will get the same Claim until we've finished writing to it.
-        ByteCountingOutputStream claimStream = writableClaimStreams.remove(scc.getResourceClaim());
-        final long initialLength;
-        if (claimStream == null) {
-            final File file = getPath(scc).toFile();
-            // use a synchronized stream because we want to pass this OutputStream out from one thread to another.
-            claimStream = new SynchronizedByteCountingOutputStream(new FileOutputStream(file, true), file.length());
-            initialLength = 0L;
-        } else {
-            if (append) {
-                initialLength = Math.max(0, scc.getLength());
-            } else {
-                initialLength = 0;
-            }
-        }
+        ByteCountingOutputStream claimStream = writableClaimStreams.get(scc.getResourceClaim());
+        final int initialLength = append ? (int) Math.max(0, scc.getLength()) : 0;
 
         activeResourceClaims.add(resourceClaim);
         final ByteCountingOutputStream bcos = claimStream;
@@ -971,9 +965,9 @@ public class FileSystemRepository implements ContentRepository {
                     final boolean enqueued = writableClaimQueue.offer(pair);
 
                     if (enqueued) {
-                        writableClaimStreams.put(scc.getResourceClaim(), bcos);
                         LOG.debug("Claim length less than max; Adding {} back to writableClaimStreams", this);
                     } else {
+                        writableClaimStreams.remove(scc.getResourceClaim());
                         bcos.close();
 
                         LOG.debug("Claim length less than max; Closing {} because could not add back to queue", this);
@@ -1122,6 +1116,19 @@ public class FileSystemRepository implements ContentRepository {
             }
         }
 
+        // If the claim count is decremented to 0 (<= 0 as a 'defensive programming' strategy), ensure that
+        // we close the stream if there is one. There may be a stream open if create() is called and then
+        // claimant count is removed without writing to the claim (or more specifically, without closing the
+        // OutputStream that is returned when calling write() ).
+        final OutputStream out = writableClaimStreams.remove(claim);
+        if (out != null) {
+            try {
+                out.close();
+            } catch (final IOException ioe) {
+                LOG.warn("Unable to close Output Stream for " + claim, ioe);
+            }
+        }
+
         final Path curPath = getPath(claim);
         if (curPath == null) {
             return false;
@@ -1132,7 +1139,12 @@ public class FileSystemRepository implements ContentRepository {
         return archived;
     }
 
-    private boolean archive(final Path curPath) throws IOException {
+    protected int getOpenStreamCount() {
+        return writableClaimStreams.size();
+    }
+
+    // marked protected for visibility and ability to override for unit tests.
+    protected boolean archive(final Path curPath) throws IOException {
         // check if already archived
         final boolean alreadyArchived = ARCHIVE_DIR_NAME.equals(curPath.getParent().toFile().getName());
         if (alreadyArchived) {
@@ -1204,7 +1216,7 @@ public class FileSystemRepository implements ContentRepository {
     private long destroyExpiredArchives(final String containerName, final Path container) throws IOException {
         archiveExpirationLog.debug("Destroying Expired Archives for Container {}", containerName);
         final List<ArchiveInfo> notYetExceedingThreshold = new ArrayList<>();
-        final long removalTimeThreshold = System.currentTimeMillis() - maxArchiveMillis;
+        long removalTimeThreshold = System.currentTimeMillis() - maxArchiveMillis;
         long oldestArchiveDateFound = System.currentTimeMillis();
 
         // determine how much space we must have in order to stop deleting old data
@@ -1237,6 +1249,8 @@ public class FileSystemRepository implements ContentRepository {
         while ((toDelete = fileQueue.peek()) != null) {
             try {
                 final long fileSize = toDelete.getSize();
+
+                removalTimeThreshold = System.currentTimeMillis() - maxArchiveMillis;
 
                 // we use fileQueue.peek above instead of fileQueue.poll() because we don't always want to
                 // remove the head of the queue. Instead, we want to remove it only if we plan to delete it.
@@ -1295,6 +1309,7 @@ public class FileSystemRepository implements ContentRepository {
             }
 
             try {
+                final long timestampThreshold = removalTimeThreshold;
                 Files.walkFileTree(archive, new SimpleFileVisitor<Path>() {
                     @Override
                     public FileVisitResult visitFile(final Path file, final BasicFileAttributes attrs) throws IOException {
@@ -1303,7 +1318,7 @@ public class FileSystemRepository implements ContentRepository {
                         }
 
                         final long lastModTime = getLastModTime(file);
-                        if (lastModTime < removalTimeThreshold) {
+                        if (lastModTime < timestampThreshold) {
                             try {
                                 Files.deleteIfExists(file);
                                 containerState.decrementArchiveCount();
@@ -1704,4 +1719,29 @@ public class FileSystemRepository implements ContentRepository {
         }
     }
 
+    /**
+     * Will determine the scheduling interval to be used by archive cleanup task
+     * (in milliseconds). This method will enforce the minimum allowed value of
+     * 1 second (1000 milliseconds). If attempt is made to set lower value a
+     * warning will be logged and the method will return minimum value of 1000
+     */
+    private long determineCleanupInterval(NiFiProperties properties) {
+        long cleanupInterval = MIN_CLEANUP_INTERVAL_MILLIS;
+        String archiveCleanupFrequency = properties.getProperty(NiFiProperties.CONTENT_ARCHIVE_CLEANUP_FREQUENCY);
+        if (archiveCleanupFrequency != null) {
+            try {
+                cleanupInterval = FormatUtils.getTimeDuration(archiveCleanupFrequency.trim(), TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                throw new RuntimeException(
+                        "Invalid value set for property " + NiFiProperties.CONTENT_ARCHIVE_CLEANUP_FREQUENCY);
+            }
+            if (cleanupInterval < MIN_CLEANUP_INTERVAL_MILLIS) {
+                LOG.warn("The value of " + NiFiProperties.CONTENT_ARCHIVE_CLEANUP_FREQUENCY + " property is set to '"
+                        + archiveCleanupFrequency + "' which is "
+                        + "below the allowed minimum of 1 second (1000 milliseconds). Minimum value of 1 sec will be used as scheduling interval for archive cleanup task.");
+                cleanupInterval = MIN_CLEANUP_INTERVAL_MILLIS;
+            }
+        }
+        return cleanupInterval;
+    }
 }

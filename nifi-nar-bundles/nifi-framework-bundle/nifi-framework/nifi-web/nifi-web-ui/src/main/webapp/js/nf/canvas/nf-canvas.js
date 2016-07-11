@@ -59,6 +59,7 @@ nf.Canvas = (function () {
         urls: {
             identity: '../nifi-api/controller/identity',
             authorities: '../nifi-api/controller/authorities',
+            kerberos: '../nifi-api/access/kerberos',
             revision: '../nifi-api/controller/revision',
             status: '../nifi-api/controller/status',
             bulletinBoard: '../nifi-api/controller/bulletin-board',
@@ -73,7 +74,7 @@ nf.Canvas = (function () {
 
     /**
      * Generates the breadcrumbs.
-     * 
+     *
      * @argument {object} processGroup      The process group
      */
     var generateBreadcrumbs = function (processGroup) {
@@ -110,7 +111,7 @@ nf.Canvas = (function () {
 
     /**
      * Starts polling for the revision.
-     * 
+     *
      * @argument {int} autoRefreshInterval      The auto refresh interval
      */
     var startRevisionPolling = function (autoRefreshInterval) {
@@ -121,7 +122,7 @@ nf.Canvas = (function () {
 
     /**
      * Polls for the revision.
-     * 
+     *
      * @argument {int} autoRefreshInterval      The auto refresh interval
      */
     var pollForRevision = function (autoRefreshInterval) {
@@ -139,7 +140,7 @@ nf.Canvas = (function () {
 
     /**
      * Start polling for the status.
-     * 
+     *
      * @argument {int} autoRefreshInterval      The auto refresh interval
      */
     var startStatusPolling = function (autoRefreshInterval) {
@@ -150,7 +151,7 @@ nf.Canvas = (function () {
 
     /**
      * Register the status poller.
-     * 
+     *
      * @argument {int} autoRefreshInterval      The auto refresh interval
      */
     var pollForStatus = function (autoRefreshInterval) {
@@ -222,165 +223,165 @@ nf.Canvas = (function () {
 
         // create the canvas
         svg = d3.select('#canvas-container').append('svg')
-                .on('contextmenu', function () {
-                    // reset the canvas click flag
-                    canvasClicked = false;
+            .on('contextmenu', function () {
+                // reset the canvas click flag
+                canvasClicked = false;
 
-                    // since the context menu event propagated back to the canvas, clear the selection
-                    nf.CanvasUtils.getSelection().classed('selected', false);
+                // since the context menu event propagated back to the canvas, clear the selection
+                nf.CanvasUtils.getSelection().classed('selected', false);
 
-                    // show the context menu on the canvas
-                    nf.ContextMenu.show();
+                // show the context menu on the canvas
+                nf.ContextMenu.show();
 
-                    // prevent default browser behavior
-                    d3.event.preventDefault();
-                });
+                // prevent default browser behavior
+                d3.event.preventDefault();
+            });
 
         // create the definitions element
         var defs = svg.append('defs');
 
         // create arrow definitions for the various line types
         defs.selectAll('marker')
-                .data(['normal', 'ghost'])
-                .enter().append('marker')
-                .attr({
-                    'id': function (d) {
-                        return d;
-                    },
-                    'viewBox': '0 0 6 6',
-                    'refX': 5,
-                    'refY': 3,
-                    'markerWidth': 6,
-                    'markerHeight': 6,
-                    'orient': 'auto',
-                    'fill': function (d) {
-                        if (d === 'ghost') {
-                            return '#aaaaaa';
-                        } else {
-                            return '#000000';
-                        }
+            .data(['normal', 'ghost'])
+            .enter().append('marker')
+            .attr({
+                'id': function (d) {
+                    return d;
+                },
+                'viewBox': '0 0 6 6',
+                'refX': 5,
+                'refY': 3,
+                'markerWidth': 6,
+                'markerHeight': 6,
+                'orient': 'auto',
+                'fill': function (d) {
+                    if (d === 'ghost') {
+                        return '#aaaaaa';
+                    } else {
+                        return '#000000';
                     }
-                })
-                .append('path')
-                .attr('d', 'M2,3 L0,6 L6,3 L0,0 z');
+                }
+            })
+            .append('path')
+            .attr('d', 'M2,3 L0,6 L6,3 L0,0 z');
 
         // define the gradient for the processor stats background
         var processGroupStatsBackground = defs.append('linearGradient')
-                .attr({
-                    'id': 'process-group-stats-background',
-                    'x1': '0%',
-                    'y1': '100%',
-                    'x2': '0%',
-                    'y2': '0%'
-                });
+            .attr({
+                'id': 'process-group-stats-background',
+                'x1': '0%',
+                'y1': '100%',
+                'x2': '0%',
+                'y2': '0%'
+            });
 
         processGroupStatsBackground.append('stop')
-                .attr({
-                    'offset': '0%',
-                    'stop-color': '#dedede'
-                });
+            .attr({
+                'offset': '0%',
+                'stop-color': '#dedede'
+            });
 
         processGroupStatsBackground.append('stop')
-                .attr({
-                    'offset': '50%',
-                    'stop-color': '#ffffff'
-                });
+            .attr({
+                'offset': '50%',
+                'stop-color': '#ffffff'
+            });
 
         processGroupStatsBackground.append('stop')
-                .attr({
-                    'offset': '100%',
-                    'stop-color': '#dedede'
-                });
+            .attr({
+                'offset': '100%',
+                'stop-color': '#dedede'
+            });
 
         // define the gradient for the processor stats background
         var processorStatsBackground = defs.append('linearGradient')
-                .attr({
-                    'id': 'processor-stats-background',
-                    'x1': '0%',
-                    'y1': '100%',
-                    'x2': '0%',
-                    'y2': '0%'
-                });
+            .attr({
+                'id': 'processor-stats-background',
+                'x1': '0%',
+                'y1': '100%',
+                'x2': '0%',
+                'y2': '0%'
+            });
 
         processorStatsBackground.append('stop')
-                .attr({
-                    'offset': '0%',
-                    'stop-color': '#6f97ac'
-                });
+            .attr({
+                'offset': '0%',
+                'stop-color': '#6f97ac'
+            });
 
         processorStatsBackground.append('stop')
-                .attr({
-                    'offset': '100%',
-                    'stop-color': '#30505c'
-                });
+            .attr({
+                'offset': '100%',
+                'stop-color': '#30505c'
+            });
 
         // define the gradient for the port background
         var portBackground = defs.append('linearGradient')
-                .attr({
-                    'id': 'port-background',
-                    'x1': '0%',
-                    'y1': '100%',
-                    'x2': '0%',
-                    'y2': '0%'
-                });
+            .attr({
+                'id': 'port-background',
+                'x1': '0%',
+                'y1': '100%',
+                'x2': '0%',
+                'y2': '0%'
+            });
 
         portBackground.append('stop')
-                .attr({
-                    'offset': '0%',
-                    'stop-color': '#aaaaaa'
-                });
+            .attr({
+                'offset': '0%',
+                'stop-color': '#aaaaaa'
+            });
 
         portBackground.append('stop')
-                .attr({
-                    'offset': '100%',
-                    'stop-color': '#ffffff'
-                });
+            .attr({
+                'offset': '100%',
+                'stop-color': '#ffffff'
+            });
 
         // define the gradient for the expiration icon
         var expirationBackground = defs.append('linearGradient')
-                .attr({
-                    'id': 'expiration',
-                    'x1': '0%',
-                    'y1': '0%',
-                    'x2': '0%',
-                    'y2': '100%'
-                });
+            .attr({
+                'id': 'expiration',
+                'x1': '0%',
+                'y1': '0%',
+                'x2': '0%',
+                'y2': '100%'
+            });
 
         expirationBackground.append('stop')
-                .attr({
-                    'offset': '0%',
-                    'stop-color': '#aeafb1'
-                });
+            .attr({
+                'offset': '0%',
+                'stop-color': '#aeafb1'
+            });
 
         expirationBackground.append('stop')
-                .attr({
-                    'offset': '100%',
-                    'stop-color': '#87888a'
-                });
+            .attr({
+                'offset': '100%',
+                'stop-color': '#87888a'
+            });
 
         // create the canvas element
         canvas = svg.append('g')
-                .attr({
-                    'transform': 'translate(' + TRANSLATE + ') scale(' + SCALE + ')',
-                    'pointer-events': 'all',
-                    'id': 'canvas'
-                });
+            .attr({
+                'transform': 'translate(' + TRANSLATE + ') scale(' + SCALE + ')',
+                'pointer-events': 'all',
+                'id': 'canvas'
+            });
 
         // handle canvas events
         svg.on('mousedown.selection', function () {
-            canvasClicked = true;
+                canvasClicked = true;
 
-            if (d3.event.button !== 0) {
-                // prevent further propagation (to parents and others handlers 
-                // on the same element to prevent zoom behavior)
-                d3.event.stopImmediatePropagation();
-                return;
-            }
+                if (d3.event.button !== 0) {
+                    // prevent further propagation (to parents and others handlers
+                    // on the same element to prevent zoom behavior)
+                    d3.event.stopImmediatePropagation();
+                    return;
+                }
 
-            // show selection box if shift is held down
-            if (d3.event.shiftKey) {
-                var position = d3.mouse(canvas.node());
-                canvas.append('rect')
+                // show selection box if shift is held down
+                if (d3.event.shiftKey) {
+                    var position = d3.mouse(canvas.node());
+                    canvas.append('rect')
                         .attr('rx', 6)
                         .attr('ry', 6)
                         .attr('x', position[0])
@@ -396,108 +397,108 @@ nf.Canvas = (function () {
                         })
                         .datum(position);
 
-                // prevent further propagation (to parents and others handlers 
-                // on the same element to prevent zoom behavior)
-                d3.event.stopImmediatePropagation();
+                    // prevent further propagation (to parents and others handlers
+                    // on the same element to prevent zoom behavior)
+                    d3.event.stopImmediatePropagation();
 
-                // prevents the browser from changing to a text selection cursor
-                d3.event.preventDefault();
-            }
-        })
-                .on('mousemove.selection', function () {
-                    // update selection box if shift is held down
-                    if (d3.event.shiftKey) {
-                        // get the selection box
-                        var selectionBox = d3.select('rect.selection');
-                        if (!selectionBox.empty()) {
-                            // get the original position
-                            var originalPosition = selectionBox.datum();
-                            var position = d3.mouse(canvas.node());
-
-                            var d = {};
-                            if (originalPosition[0] < position[0]) {
-                                d.x = originalPosition[0];
-                                d.width = position[0] - originalPosition[0];
-                            } else {
-                                d.x = position[0];
-                                d.width = originalPosition[0] - position[0];
-                            }
-
-                            if (originalPosition[1] < position[1]) {
-                                d.y = originalPosition[1];
-                                d.height = position[1] - originalPosition[1];
-                            } else {
-                                d.y = position[1];
-                                d.height = originalPosition[1] - position[1];
-                            }
-
-                            // update the selection box
-                            selectionBox.attr(d);
-
-                            // prevent further propagation (to parents)
-                            d3.event.stopPropagation();
-                        }
-                    }
-                })
-                .on('mouseup.selection', function () {
-                    // ensure this originated from clicking the canvas, not a component.
-                    // when clicking on a component, the event propagation is stopped so
-                    // it never reaches the canvas. we cannot do this however on up events
-                    // since the drag events break down
-                    if (canvasClicked === false) {
-                        return;
-                    }
-
-                    // reset the canvas click flag
-                    canvasClicked = false;
-
-                    // get the selection box 
+                    // prevents the browser from changing to a text selection cursor
+                    d3.event.preventDefault();
+                }
+            })
+            .on('mousemove.selection', function () {
+                // update selection box if shift is held down
+                if (d3.event.shiftKey) {
+                    // get the selection box
                     var selectionBox = d3.select('rect.selection');
                     if (!selectionBox.empty()) {
-                        var selectionBoundingBox = {
-                            x: parseInt(selectionBox.attr('x'), 10),
-                            y: parseInt(selectionBox.attr('y'), 10),
-                            width: parseInt(selectionBox.attr('width'), 10),
-                            height: parseInt(selectionBox.attr('height'), 10)
-                        };
+                        // get the original position
+                        var originalPosition = selectionBox.datum();
+                        var position = d3.mouse(canvas.node());
 
-                        // see if a component should be selected or not
-                        d3.selectAll('g.component').classed('selected', function (d) {
-                            // consider it selected if its already selected or enclosed in the bounding box
-                            return d3.select(this).classed('selected') ||
-                                    d.component.position.x >= selectionBoundingBox.x && (d.component.position.x + d.dimensions.width) <= (selectionBoundingBox.x + selectionBoundingBox.width) &&
-                                    d.component.position.y >= selectionBoundingBox.y && (d.component.position.y + d.dimensions.height) <= (selectionBoundingBox.y + selectionBoundingBox.height);
-                        });
+                        var d = {};
+                        if (originalPosition[0] < position[0]) {
+                            d.x = originalPosition[0];
+                            d.width = position[0] - originalPosition[0];
+                        } else {
+                            d.x = position[0];
+                            d.width = originalPosition[0] - position[0];
+                        }
 
-                        // see if a connection should be selected or not
-                        d3.selectAll('g.connection').classed('selected', function (d) {
-                            // consider all points
-                            var points = [d.start].concat(d.bends, [d.end]);
+                        if (originalPosition[1] < position[1]) {
+                            d.y = originalPosition[1];
+                            d.height = position[1] - originalPosition[1];
+                        } else {
+                            d.y = position[1];
+                            d.height = originalPosition[1] - position[1];
+                        }
 
-                            // determine the bounding box
-                            var x = d3.extent(points, function (pt) {
-                                return pt.x;
-                            });
-                            var y = d3.extent(points, function (pt) {
-                                return pt.y;
-                            });
+                        // update the selection box
+                        selectionBox.attr(d);
 
-                            // consider it selected if its already selected or enclosed in the bounding box
-                            return d3.select(this).classed('selected') ||
-                                    x[0] >= selectionBoundingBox.x && x[1] <= (selectionBoundingBox.x + selectionBoundingBox.width) &&
-                                    y[0] >= selectionBoundingBox.y && y[1] <= (selectionBoundingBox.y + selectionBoundingBox.height);
-                        });
-
-                        // remove the selection box
-                        selectionBox.remove();
-                    } else if (panning === false) {
-                        // deselect as necessary if we are not panning
-                        nf.CanvasUtils.getSelection().classed('selected', false);
+                        // prevent further propagation (to parents)
+                        d3.event.stopPropagation();
                     }
+                }
+            })
+            .on('mouseup.selection', function () {
+                // ensure this originated from clicking the canvas, not a component.
+                // when clicking on a component, the event propagation is stopped so
+                // it never reaches the canvas. we cannot do this however on up events
+                // since the drag events break down
+                if (canvasClicked === false) {
+                    return;
+                }
 
-                    // update the toolbar
-                    nf.CanvasToolbar.refresh();
-                });
+                // reset the canvas click flag
+                canvasClicked = false;
+
+                // get the selection box
+                var selectionBox = d3.select('rect.selection');
+                if (!selectionBox.empty()) {
+                    var selectionBoundingBox = {
+                        x: parseInt(selectionBox.attr('x'), 10),
+                        y: parseInt(selectionBox.attr('y'), 10),
+                        width: parseInt(selectionBox.attr('width'), 10),
+                        height: parseInt(selectionBox.attr('height'), 10)
+                    };
+
+                    // see if a component should be selected or not
+                    d3.selectAll('g.component').classed('selected', function (d) {
+                        // consider it selected if its already selected or enclosed in the bounding box
+                        return d3.select(this).classed('selected') ||
+                            d.component.position.x >= selectionBoundingBox.x && (d.component.position.x + d.dimensions.width) <= (selectionBoundingBox.x + selectionBoundingBox.width) &&
+                            d.component.position.y >= selectionBoundingBox.y && (d.component.position.y + d.dimensions.height) <= (selectionBoundingBox.y + selectionBoundingBox.height);
+                    });
+
+                    // see if a connection should be selected or not
+                    d3.selectAll('g.connection').classed('selected', function (d) {
+                        // consider all points
+                        var points = [d.start].concat(d.bends, [d.end]);
+
+                        // determine the bounding box
+                        var x = d3.extent(points, function (pt) {
+                            return pt.x;
+                        });
+                        var y = d3.extent(points, function (pt) {
+                            return pt.y;
+                        });
+
+                        // consider it selected if its already selected or enclosed in the bounding box
+                        return d3.select(this).classed('selected') ||
+                            x[0] >= selectionBoundingBox.x && x[1] <= (selectionBoundingBox.x + selectionBoundingBox.width) &&
+                            y[0] >= selectionBoundingBox.y && y[1] <= (selectionBoundingBox.y + selectionBoundingBox.height);
+                    });
+
+                    // remove the selection box
+                    selectionBox.remove();
+                } else if (panning === false) {
+                    // deselect as necessary if we are not panning
+                    nf.CanvasUtils.getSelection().classed('selected', false);
+                }
+
+                // update the toolbar
+                nf.CanvasToolbar.refresh();
+            });
 
         // define a function for update the graph dimensions
         var updateGraphSize = function () {
@@ -537,125 +538,54 @@ nf.Canvas = (function () {
                 nf.Settings.resetTableSize();
             }
         }).on('keydown', function (evt) {
-            var isCtrl = evt.ctrlKey || evt.metaKey;
-
-            // consider escape, before checking dialogs
-            if (!isCtrl && evt.keyCode === 27) {
-                // esc
-
-                // prevent escape when a property value is being edited and it is unable to close itself 
-                // (due to focus loss on field) - allowing this to continue would could cause other
-                // unsaved changes to be lost as it would end up cancel the entire configuration dialog
-                // not just the field itself
-                if ($('div.value-combo').is(':visible') || $('div.slickgrid-nfel-editor').is(':visible') || $('div.slickgrid-editor').is(':visible')) {
-                    return;
-                }
-
-                // first consider read only property detail dialog
-                if ($('div.property-detail').is(':visible')) {
-                    nf.Common.removeAllPropertyDetailDialogs();
-
-                    // prevent further bubbling as we're already handled it
-                    evt.stopPropagation();
-                    evt.preventDefault();
-                } else {
-                    var target = $(evt.target);
-                    if (target.length) {
-                        var isBody = target.get(0) === $('#canvas-body').get(0);
-                        var inShell = target.closest('#shell-dialog').length;
-
-                        // special handling for body and shell
-                        if (isBody || inShell) {
-                            var cancellables = $('.cancellable');
-                            if (cancellables.length) {
-                                var zIndexMax = null;
-                                var dialogMax = null;
-
-                                // identify the top most cancellable
-                                $.each(cancellables, function (_, cancellable) {
-                                    var dialog = $(cancellable);
-                                    var zIndex = dialog.css('zIndex');
-
-                                    // if the dialog has a zIndex consider it
-                                    if (dialog.is(':visible') && nf.Common.isDefinedAndNotNull(zIndex)) {
-                                        zIndex = parseInt(zIndex, 10);
-                                        if (zIndexMax === null || zIndex > zIndexMax) {
-                                            zIndexMax = zIndex;
-                                            dialogMax = dialog;
-                                        }
-                                    }
-                                });
-
-                                // if we've identified a dialog to close do so and stop propagation
-                                if (dialogMax !== null) {
-                                    // hide the cancellable
-                                    if (dialogMax.hasClass('modal')) {
-                                        dialogMax.modal('hide');
-                                    } else {
-                                        dialogMax.hide();
-                                    }
-
-                                    // prevent further bubbling as we're already handled it
-                                    evt.stopPropagation();
-                                    evt.preventDefault();
-                                }
-                            }
-                        } else {
-                            // otherwise close the closest visible cancellable
-                            var parentDialog = target.closest('.cancellable:visible').first();
-                            if (parentDialog.length) {
-                                if (parentDialog.hasClass('modal')) {
-                                    parentDialog.modal('hide');
-                                } else {
-                                    parentDialog.hide();
-                                }
-
-                                // prevent further bubbling as we're already handled it
-                                evt.stopPropagation();
-                                evt.preventDefault();
-                            }
-                        }
-                    }
-                }
-
-                return;
-            }
-
             // if a dialog is open, disable canvas shortcuts
-            if ($('.dialog').is(':visible')) {
+            if ($('.dialog').is(':visible') || $('#search-field').is(':focus')) {
                 return;
             }
+
+            // get the current selection
+            var selection = nf.CanvasUtils.getSelection();
 
             // handle shortcuts
+            var isCtrl = evt.ctrlKey || evt.metaKey;
             if (isCtrl) {
                 if (evt.keyCode === 82) {
                     // ctrl-r
                     nf.Actions.reloadStatus();
 
-                    evt.preventDefault();
+                    // default prevented in nf-universal-capture.js
                 } else if (evt.keyCode === 65) {
                     // ctrl-a
                     nf.Actions.selectAll();
                     nf.CanvasToolbar.refresh();
 
+                    // only want to prevent default if the action was performed, otherwise default select all would be overridden
                     evt.preventDefault();
                 } else if (evt.keyCode === 67) {
                     // ctrl-c
-                    nf.Actions.copy(nf.CanvasUtils.getSelection());
+                    if (nf.Common.isDFM() && nf.CanvasUtils.isCopyable(selection)) {
+                        nf.Actions.copy(selection);
 
-                    evt.preventDefault();
+                        // only want to prevent default if the action was performed, otherwise default copy would be overridden
+                        evt.preventDefault();
+                    }
                 } else if (evt.keyCode === 86) {
-                    // ctrl-p
-                    nf.Actions.paste();
+                    // ctrl-v
+                    if (nf.Common.isDFM() && nf.CanvasUtils.isPastable()) {
+                        nf.Actions.paste(selection);
 
-                    evt.preventDefault();
+                        // only want to prevent default if the action was performed, otherwise default paste would be overridden
+                        evt.preventDefault();
+                    }
                 }
             } else {
-                if (evt.keyCode === 46) {
-                    // delete
-                    nf.Actions['delete'](nf.CanvasUtils.getSelection());
+                if (evt.keyCode == 8 || evt.keyCode === 46) {
+                    // backspace or delete
+                    if (nf.Common.isDFM() && nf.CanvasUtils.isDeletable(selection)) {
+                        nf.Actions['delete'](selection);
+                    }
 
-                    evt.preventDefault();
+                    // default prevented in nf-universal-capture.js
                 }
             }
         });
@@ -694,7 +624,7 @@ nf.Canvas = (function () {
 
     /**
      * Sets the colors for the specified type.
-     * 
+     *
      * @param {array} colors The possible colors
      * @param {string} type The component type for these colors
      */
@@ -708,30 +638,30 @@ nf.Canvas = (function () {
 
         // define the gradient for the processor background
         var gradient = processorSelection.enter().append('linearGradient')
-                .attr({
-                    'id': function (d) {
-                        return type + '-background-' + d;
-                    },
-                    'class': type + '-background',
-                    'x1': '0%',
-                    'y1': '100%',
-                    'x2': '0%',
-                    'y2': '0%'
-                });
+            .attr({
+                'id': function (d) {
+                    return type + '-background-' + d;
+                },
+                'class': type + '-background',
+                'x1': '0%',
+                'y1': '100%',
+                'x2': '0%',
+                'y2': '0%'
+            });
 
         gradient.append('stop')
-                .attr({
-                    'offset': '0%',
-                    'stop-color': function (d) {
-                        return '#' + d;
-                    }
-                });
+            .attr({
+                'offset': '0%',
+                'stop-color': function (d) {
+                    return '#' + d;
+                }
+            });
 
         gradient.append('stop')
-                .attr({
-                    'offset': '100%',
-                    'stop-color': '#ffffff'
-                });
+            .attr({
+                'offset': '100%',
+                'stop-color': '#ffffff'
+            });
 
         // remove old processor colors
         processorSelection.exit().remove();
@@ -851,7 +781,7 @@ nf.Canvas = (function () {
 
     /**
      * Refreshes the graph.
-     * 
+     *
      * @argument {string} processGroupId        The process group id
      */
     var reloadProcessGroup = function (processGroupId) {
@@ -898,12 +828,12 @@ nf.Canvas = (function () {
 
     /**
      * Refreshes the status for the resources that exist in the specified process group.
-     * 
+     *
      * @argument {string} processGroupId        The id of the process group
      */
     var reloadStatus = function (processGroupId) {
         // get the stats
-        return  $.Deferred(function (deferred) {
+        return $.Deferred(function (deferred) {
             $.ajax({
                 type: 'GET',
                 url: config.urls.controller + '/process-groups/' + encodeURIComponent(processGroupId) + '/status',
@@ -1027,55 +957,77 @@ nf.Canvas = (function () {
          * Initialize NiFi.
          */
         init: function () {
-            // get the current user's identity
-            var identityXhr = $.ajax({
-                type: 'GET',
-                url: config.urls.identity,
-                dataType: 'json'
-            });
-
-            // get the current user's authorities
-            var authoritiesXhr = $.ajax({
-                type: 'GET',
-                url: config.urls.authorities,
-                dataType: 'json'
-            });
+            // attempt kerberos authentication
+            var ticketExchange = $.Deferred(function (deferred) {
+                if (nf.Storage.hasItem('jwt')) {
+                    deferred.resolve();
+                } else {
+                    $.ajax({
+                        type: 'POST',
+                        url: config.urls.kerberos,
+                        dataType: 'text'
+                    }).done(function (jwt) {
+                        // get the payload and store the token with the appropriate expiration
+                        var token = nf.Common.getJwtPayload(jwt);
+                        var expiration = parseInt(token['exp'], 10) * nf.Common.MILLIS_PER_SECOND;
+                        nf.Storage.setItem('jwt', jwt, expiration);
+                        deferred.resolve();
+                    }).fail(function () {
+                        deferred.reject();
+                    });
+                }
+            }).promise();
 
             // load the identity and authorities for the current user
             var userXhr = $.Deferred(function (deferred) {
-                $.when(authoritiesXhr, identityXhr).done(function (authoritiesResult, identityResult) {
-                    var authoritiesResponse = authoritiesResult[0];
-                    var identityResponse = identityResult[0];
+                ticketExchange.always(function () {
+                    // get the current user's identity
+                    var identityXhr = $.ajax({
+                        type: 'GET',
+                        url: config.urls.identity,
+                        dataType: 'json'
+                    });
 
-                    // set the user's authorities
-                    nf.Common.setAuthorities(authoritiesResponse.authorities);
+                    // get the current user's authorities
+                    var authoritiesXhr = $.ajax({
+                        type: 'GET',
+                        url: config.urls.authorities,
+                        dataType: 'json'
+                    });
 
-                    // at this point the user may be themselves or anonymous
+                    $.when(authoritiesXhr, identityXhr).done(function (authoritiesResult, identityResult) {
+                        var authoritiesResponse = authoritiesResult[0];
+                        var identityResponse = identityResult[0];
 
-                    // if the user is logged, we want to determine if they were logged in using a certificate
-                    if (identityResponse.identity !== 'anonymous') {
-                        // rendner the users name
-                        $('#current-user').text(identityResponse.identity).show();
+                        // set the user's authorities
+                        nf.Common.setAuthorities(authoritiesResponse.authorities);
 
-                        // render the logout button if there is a token locally
-                        if (nf.Storage.getItem('jwt') !== null) {
-                            $('#logout-link-container').show();
+                        // at this point the user may be themselves or anonymous
+
+                        // if the user is logged, we want to determine if they were logged in using a certificate
+                        if (identityResponse.identity !== 'anonymous') {
+                            // rendner the users name
+                            $('#current-user').text(identityResponse.identity).show();
+
+                            // render the logout button if there is a token locally
+                            if (nf.Storage.getItem('jwt') !== null) {
+                                $('#logout-link-container').show();
+                            }
+                        } else {
+                            // set the anonymous user label
+                            nf.Common.setAnonymousUserLabel();
                         }
-                    } else {
-                        // set the anonymous user label
-                        nf.Common.setAnonymousUserLabel();
-                    }
-                    deferred.resolve();
-                }).fail(function (xhr, status, error) {
-                    // there is no anonymous access and we don't know this user - open the login page which handles login/registration/etc
-                    if (xhr.status === 401 || xhr.status === 403) {
-                        window.location = '/nifi/login';
-                    } else {
-                        deferred.reject(xhr, status, error);
-                    }
+                        deferred.resolve();
+                    }).fail(function (xhr, status, error) {
+                        // there is no anonymous access and we don't know this user - open the login page which handles login/registration/etc
+                        if (xhr.status === 401 || xhr.status === 403) {
+                            window.location = '/nifi/login';
+                        } else {
+                            deferred.reject(xhr, status, error);
+                        }
+                    });
                 });
             }).promise();
-
             userXhr.done(function () {
                 // get the controller config to register the status poller
                 var configXhr = $.ajax({
@@ -1151,6 +1103,7 @@ nf.Canvas = (function () {
                             nf.Settings.init();
                             nf.Actions.init();
                             nf.QueueListing.init();
+                            nf.ComponentState.init();
 
                             // initialize the component behaviors
                             nf.Draggable.init();
@@ -1202,7 +1155,7 @@ nf.Canvas = (function () {
 
         /**
          * Defines the gradient colors used to render processors.
-         * 
+         *
          * @param {array} colors The colors
          */
         defineProcessorColors: function (colors) {
@@ -1211,7 +1164,7 @@ nf.Canvas = (function () {
 
         /**
          * Defines the gradient colors used to render label.
-         * 
+         *
          * @param {array} colors The colors
          */
         defineLabelColors: function (colors) {
@@ -1220,7 +1173,7 @@ nf.Canvas = (function () {
 
         /**
          * Return whether this instance of NiFi is clustered.
-         * 
+         *
          * @returns {Boolean}
          */
         isClustered: function () {
@@ -1236,7 +1189,7 @@ nf.Canvas = (function () {
 
         /**
          * Set the group id.
-         * 
+         *
          * @argument {string} gi       The group id
          */
         setGroupId: function (gi) {
@@ -1252,7 +1205,7 @@ nf.Canvas = (function () {
 
         /**
          * Set the group name.
-         * 
+         *
          * @argument {string} gn     The group name
          */
         setGroupName: function (gn) {
@@ -1268,7 +1221,7 @@ nf.Canvas = (function () {
 
         /**
          * Set the parent group id.
-         * 
+         *
          * @argument {string} pgi     The id of the parent group
          */
         setParentGroupId: function (pgi) {
@@ -1347,9 +1300,9 @@ nf.Canvas = (function () {
 
                     // mark the selection as appropriate
                     selection.classed('visible', visible)
-                            .classed('entering', function () {
-                                return visible && !wasVisible;
-                            }).classed('leaving', function () {
+                        .classed('entering', function () {
+                            return visible && !wasVisible;
+                        }).classed('leaving', function () {
                         return !visible && wasVisible;
                     });
                 };
@@ -1385,55 +1338,55 @@ nf.Canvas = (function () {
 
                     // define the behavior
                     behavior = d3.behavior.zoom()
-                            .scaleExtent([MIN_SCALE, MAX_SCALE])
-                            .translate(TRANSLATE)
-                            .scale(SCALE)
-                            .on('zoomstart', function () {
-                                // hide the context menu
-                                nf.ContextMenu.hide();
-                            })
-                            .on('zoom', function () {
-                                // if we have zoomed, indicate that we are panning
-                                // to prevent deselection elsewhere
-                                if (zoomed) {
-                                    panning = true;
-                                } else {
-                                    zoomed = true;
-                                }
+                        .scaleExtent([MIN_SCALE, MAX_SCALE])
+                        .translate(TRANSLATE)
+                        .scale(SCALE)
+                        .on('zoomstart', function () {
+                            // hide the context menu
+                            nf.ContextMenu.hide();
+                        })
+                        .on('zoom', function () {
+                            // if we have zoomed, indicate that we are panning
+                            // to prevent deselection elsewhere
+                            if (zoomed) {
+                                panning = true;
+                            } else {
+                                zoomed = true;
+                            }
 
-                                // see if the scale has changed during this zoom event,
-                                // we want to only transition when zooming in/out as running
-                                // the transitions during pan events is 
-                                var transition = d3.event.sourceEvent.type === 'wheel' || d3.event.sourceEvent.type === 'mousewheel';
+                            // see if the scale has changed during this zoom event,
+                            // we want to only transition when zooming in/out as running
+                            // the transitions during pan events is
+                            var transition = d3.event.sourceEvent.type === 'wheel' || d3.event.sourceEvent.type === 'mousewheel';
 
-                                // refresh the canvas
-                                refreshed = nf.Canvas.View.refresh({
-                                    persist: false,
-                                    transition: transition,
-                                    refreshComponents: false,
-                                    refreshBirdseye: false
-                                });
-                            })
-                            .on('zoomend', function () {
-                                // ensure the canvas was actually refreshed
-                                if (nf.Common.isDefinedAndNotNull(refreshed)) {
-                                    nf.Canvas.View.updateVisibility();
-
-                                    // refresh the birdseye
-                                    refreshed.done(function () {
-                                        nf.Birdseye.refresh();
-                                    });
-
-                                    // persist the users view
-                                    nf.CanvasUtils.persistUserView();
-
-                                    // reset the refreshed deferred
-                                    refreshed = null;
-                                }
-
-                                panning = false;
-                                zoomed = false;
+                            // refresh the canvas
+                            refreshed = nf.Canvas.View.refresh({
+                                persist: false,
+                                transition: transition,
+                                refreshComponents: false,
+                                refreshBirdseye: false
                             });
+                        })
+                        .on('zoomend', function () {
+                            // ensure the canvas was actually refreshed
+                            if (nf.Common.isDefinedAndNotNull(refreshed)) {
+                                nf.Canvas.View.updateVisibility();
+
+                                // refresh the birdseye
+                                refreshed.done(function () {
+                                    nf.Birdseye.refresh();
+                                });
+
+                                // persist the users view
+                                nf.CanvasUtils.persistUserView();
+
+                                // reset the refreshed deferred
+                                refreshed = null;
+                            }
+
+                            panning = false;
+                            zoomed = false;
+                        });
 
                     // add the behavior to the canvas and disable dbl click zoom
                     svg.call(behavior).on('dblclick.zoom', null);
@@ -1441,7 +1394,7 @@ nf.Canvas = (function () {
 
                 /**
                  * Whether or not a component should be rendered based solely on the current scale.
-                 * 
+                 *
                  * @returns {Boolean}
                  */
                 shouldRenderPerScale: function () {
@@ -1458,7 +1411,7 @@ nf.Canvas = (function () {
 
                 /**
                  * Sets/gets the current translation.
-                 * 
+                 *
                  * @param {array} translate     [x, y]
                  */
                 translate: function (translate) {
@@ -1471,7 +1424,7 @@ nf.Canvas = (function () {
 
                 /**
                  * Sets/gets the current scale.
-                 * 
+                 *
                  * @param {number} scale        The new scale
                  */
                 scale: function (scale) {
@@ -1630,7 +1583,7 @@ nf.Canvas = (function () {
 
                 /**
                  * Refreshes the view based on the configured translation and scale.
-                 * 
+                 *
                  * @param {object} options Options for the refresh operation
                  */
                 refresh: function (options) {
@@ -1662,18 +1615,18 @@ nf.Canvas = (function () {
                         // update the canvas
                         if (transition === true) {
                             canvas.transition()
-                                    .duration(500)
-                                    .attr('transform', function () {
-                                        return 'translate(' + behavior.translate() + ') scale(' + behavior.scale() + ')';
-                                    })
-                                    .each('end', function () {
-                                        // refresh birdseye if appropriate
-                                        if (refreshBirdseye === true) {
-                                            nf.Birdseye.refresh();
-                                        }
+                                .duration(500)
+                                .attr('transform', function () {
+                                    return 'translate(' + behavior.translate() + ') scale(' + behavior.scale() + ')';
+                                })
+                                .each('end', function () {
+                                    // refresh birdseye if appropriate
+                                    if (refreshBirdseye === true) {
+                                        nf.Birdseye.refresh();
+                                    }
 
-                                        deferred.resolve();
-                                    });
+                                    deferred.resolve();
+                                });
                         } else {
                             canvas.attr('transform', function () {
                                 return 'translate(' + behavior.translate() + ') scale(' + behavior.scale() + ')';

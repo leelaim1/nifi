@@ -25,6 +25,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.connectable.Connectable;
 import org.apache.nifi.connectable.ConnectableType;
 import org.apache.nifi.controller.FlowController;
@@ -37,28 +38,35 @@ import org.apache.nifi.encrypt.StringEncryptor;
 import org.apache.nifi.engine.FlowEngine;
 import org.apache.nifi.processor.StandardProcessContext;
 import org.apache.nifi.processor.exception.ProcessException;
+import org.apache.nifi.registry.VariableRegistry;
 import org.apache.nifi.util.FormatUtils;
 import org.quartz.CronExpression;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class QuartzSchedulingAgent implements SchedulingAgent {
+public class QuartzSchedulingAgent extends AbstractSchedulingAgent {
 
     private final Logger logger = LoggerFactory.getLogger(QuartzSchedulingAgent.class);
 
     private final FlowController flowController;
     private final ProcessContextFactory contextFactory;
-    private final FlowEngine flowEngine;
     private final StringEncryptor encryptor;
+    private final VariableRegistry variableRegistry;
 
     private volatile String adminYieldDuration = "1 sec";
     private final Map<Object, List<AtomicBoolean>> canceledTriggers = new HashMap<>();
 
-    public QuartzSchedulingAgent(final FlowController flowController, final FlowEngine flowEngine, final ProcessContextFactory contextFactory, final StringEncryptor enryptor) {
+    public QuartzSchedulingAgent(final FlowController flowController, final FlowEngine flowEngine, final ProcessContextFactory contextFactory, final StringEncryptor enryptor,
+                                 final VariableRegistry variableRegistry) {
+        super(flowEngine);
         this.flowController = flowController;
         this.contextFactory = contextFactory;
-        this.flowEngine = flowEngine;
         this.encryptor = enryptor;
+        this.variableRegistry = variableRegistry;
+    }
+
+    private StateManager getStateManager(final String componentId) {
+        return flowController.getStateManagerProvider().getStateManager(componentId);
     }
 
     @Override
@@ -66,7 +74,7 @@ public class QuartzSchedulingAgent implements SchedulingAgent {
     }
 
     @Override
-    public void schedule(final ReportingTaskNode taskNode, final ScheduleState scheduleState) {
+    public void doSchedule(final ReportingTaskNode taskNode, final ScheduleState scheduleState) {
         final List<AtomicBoolean> existingTriggers = canceledTriggers.get(taskNode);
         if (existingTriggers != null) {
             throw new IllegalStateException("Cannot schedule " + taskNode.getReportingTask() + " because it is already scheduled to run");
@@ -116,7 +124,7 @@ public class QuartzSchedulingAgent implements SchedulingAgent {
     }
 
     @Override
-    public synchronized void schedule(final Connectable connectable, final ScheduleState scheduleState) {
+    public synchronized void doSchedule(final Connectable connectable, final ScheduleState scheduleState) {
         final List<AtomicBoolean> existingTriggers = canceledTriggers.get(connectable);
         if (existingTriggers != null) {
             throw new IllegalStateException("Cannot schedule " + connectable + " because it is already scheduled to run");
@@ -133,14 +141,15 @@ public class QuartzSchedulingAgent implements SchedulingAgent {
         final List<AtomicBoolean> triggers = new ArrayList<>();
         for (int i = 0; i < connectable.getMaxConcurrentTasks(); i++) {
             final Callable<Boolean> continuallyRunTask;
+
             if (connectable.getConnectableType() == ConnectableType.PROCESSOR) {
                 final ProcessorNode procNode = (ProcessorNode) connectable;
 
-                final StandardProcessContext standardProcContext = new StandardProcessContext(procNode, flowController, encryptor);
+                final StandardProcessContext standardProcContext = new StandardProcessContext(procNode, flowController, encryptor, getStateManager(connectable.getIdentifier()), variableRegistry);
                 ContinuallyRunProcessorTask runnableTask = new ContinuallyRunProcessorTask(this, procNode, flowController, contextFactory, scheduleState, standardProcContext);
                 continuallyRunTask = runnableTask;
             } else {
-                final ConnectableProcessContext connProcContext = new ConnectableProcessContext(connectable, encryptor);
+                final ConnectableProcessContext connProcContext = new ConnectableProcessContext(connectable, encryptor, getStateManager(connectable.getIdentifier()));
                 continuallyRunTask = new ContinuallyRunConnectableTask(contextFactory, connectable, scheduleState, connProcContext);
             }
 
@@ -183,12 +192,12 @@ public class QuartzSchedulingAgent implements SchedulingAgent {
     }
 
     @Override
-    public synchronized void unschedule(final Connectable connectable, final ScheduleState scheduleState) {
+    public synchronized void doUnschedule(final Connectable connectable, final ScheduleState scheduleState) {
         unschedule((Object) connectable, scheduleState);
     }
 
     @Override
-    public synchronized void unschedule(final ReportingTaskNode taskNode, final ScheduleState scheduleState) {
+    public synchronized void doUnschedule(final ReportingTaskNode taskNode, final ScheduleState scheduleState) {
         unschedule((Object) taskNode, scheduleState);
     }
 

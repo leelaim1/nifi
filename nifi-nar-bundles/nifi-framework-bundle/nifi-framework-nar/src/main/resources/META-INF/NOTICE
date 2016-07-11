@@ -1,5 +1,5 @@
 nifi-framework-nar
-Copyright 2014-2015 The Apache Software Foundation
+Copyright 2014-2016 The Apache Software Foundation
 
 This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
@@ -99,6 +99,14 @@ The following binary components are provided under the Apache Software License v
     The following NOTICE information applies:
       Swagger Core 1.5.3-M1
       Copyright 2015 Reverb Technologies, Inc.
+
+  (ASLv2) JSON-SMART
+    The following NOTICE information applies:
+      Copyright 2011 JSON-SMART authors
+
+  (ASLv2) JsonPath
+    The following NOTICE information applies:
+      Copyright 2011 JsonPath authors
 
 ************************
 Common Development and Distribution License 1.1

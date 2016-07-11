@@ -16,18 +16,56 @@
  */
 package org.apache.nifi.util;
 
+import java.util.List;
+
+import org.apache.nifi.logging.LogLevel;
 import org.apache.nifi.logging.ProcessorLog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class MockProcessorLog implements ProcessorLog {
 
-    private final Logger logger;
+    private final CapturingLogger logger;
     private final Object component;
 
     public MockProcessorLog(final String componentId, final Object component) {
-        this.logger = LoggerFactory.getLogger(component.getClass());
+        this.logger = new CapturingLogger(LoggerFactory.getLogger(component.getClass()));
         this.component = component;
+    }
+
+    /**
+     * @return a {@link List} of all TRACE level messages recorded by this {@link Logger}.
+     */
+    public List<LogMessage> getTraceMessages() {
+        return logger.getTraceMessages();
+    }
+
+    /**
+     * @return a {@link List} of all DEBUG level messages recorded by this {@link Logger}.
+     */
+    public List<LogMessage> getDebugMessages() {
+        return logger.getDebugMessages();
+    }
+
+    /**
+     * @return a {@link List} of all INFO level messages recorded by this {@link Logger}.
+     */
+    public List<LogMessage> getInfoMessages() {
+        return logger.getInfoMessages();
+    }
+
+    /**
+     * @return a {@link List} of all WARN level messages recorded by this {@link Logger}.
+     */
+    public List<LogMessage> getWarnMessages() {
+        return logger.getWarnMessages();
+    }
+
+    /**
+     * @return a {@link List} of all ERROR level messages recorded by this {@link Logger}.
+     */
+    public List<LogMessage> getErrorMessages() {
+        return logger.getErrorMessages();
     }
 
     private Object[] addProcessor(final Object[] originalArgs) {
@@ -271,6 +309,94 @@ public class MockProcessorLog implements ProcessorLog {
         final Object[] os = {component};
 
         logger.debug(msg, os);
+    }
+
+    @Override
+    public void log(LogLevel level, String msg, Throwable t) {
+        switch (level) {
+            case DEBUG:
+                debug(msg, t);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg, t);
+                break;
+            case INFO:
+                info(msg, t);
+                break;
+            case TRACE:
+                trace(msg, t);
+                break;
+            case WARN:
+                warn(msg, t);
+                break;
+        }
+    }
+
+    @Override
+    public void log(LogLevel level, String msg, Object[] os) {
+        switch (level) {
+            case DEBUG:
+                debug(msg, os);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg, os);
+                break;
+            case INFO:
+                info(msg, os);
+                break;
+            case TRACE:
+                trace(msg, os);
+                break;
+            case WARN:
+                warn(msg, os);
+                break;
+        }
+    }
+
+    @Override
+    public void log(LogLevel level, String msg) {
+        switch (level) {
+            case DEBUG:
+                debug(msg);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg);
+                break;
+            case INFO:
+                info(msg);
+                break;
+            case TRACE:
+                trace(msg);
+                break;
+            case WARN:
+                warn(msg);
+                break;
+        }
+    }
+
+    @Override
+    public void log(LogLevel level, String msg, Object[] os, Throwable t) {
+        switch (level) {
+            case DEBUG:
+                debug(msg, os, t);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg, os, t);
+                break;
+            case INFO:
+                info(msg, os, t);
+                break;
+            case TRACE:
+                trace(msg, os, t);
+                break;
+            case WARN:
+                warn(msg, os, t);
+                break;
+        }
     }
 
 }

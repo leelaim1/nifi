@@ -31,6 +31,7 @@ import javax.net.ssl.SSLContext;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
+import org.apache.nifi.annotation.lifecycle.OnShutdown;
 import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.ValidationContext;
@@ -40,6 +41,7 @@ import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors;
 import org.apache.nifi.ssl.SSLContextService;
 
 import com.amazonaws.AmazonWebServiceClient;
@@ -53,36 +55,44 @@ import com.amazonaws.http.conn.ssl.SdkTLSSocketFactory;
 import com.amazonaws.regions.Region;
 import com.amazonaws.regions.Regions;
 
+/**
+ * Abstract base class for aws processors.  This class uses aws credentials for creating aws clients
+ *
+ * @deprecated use {@link AbstractAWSCredentialsProviderProcessor} instead which uses credentials providers or creating aws clients
+ * @see AbstractAWSCredentialsProviderProcessor
+ *
+ */
+@Deprecated
 public abstract class AbstractAWSProcessor<ClientType extends AmazonWebServiceClient> extends AbstractProcessor {
 
     public static final Relationship REL_SUCCESS = new Relationship.Builder().name("success")
-            .description("FlowFiles are routed to success after being successfully copied to Amazon S3").build();
+            .description("FlowFiles are routed to success relationship").build();
     public static final Relationship REL_FAILURE = new Relationship.Builder().name("failure")
-            .description("FlowFiles are routed to failure if unable to be copied to Amazon S3").build();
+            .description("FlowFiles are routed to failure relationship").build();
 
     public static final Set<Relationship> relationships = Collections.unmodifiableSet(
             new HashSet<>(Arrays.asList(REL_SUCCESS, REL_FAILURE)));
 
-    public static final PropertyDescriptor CREDENTIALS_FILE = new PropertyDescriptor.Builder()
-            .name("Credentials File")
-            .expressionLanguageSupported(false)
-            .required(false)
-            .addValidator(StandardValidators.FILE_EXISTS_VALIDATOR)
-            .build();
-    public static final PropertyDescriptor ACCESS_KEY = new PropertyDescriptor.Builder()
-            .name("Access Key")
-            .expressionLanguageSupported(false)
-            .required(false)
-            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
-            .sensitive(true)
-            .build();
-    public static final PropertyDescriptor SECRET_KEY = new PropertyDescriptor.Builder()
-            .name("Secret Key")
-            .expressionLanguageSupported(false)
+    public static final PropertyDescriptor CREDENTIALS_FILE = CredentialPropertyDescriptors.CREDENTIALS_FILE;
+    public static final PropertyDescriptor ACCESS_KEY = CredentialPropertyDescriptors.ACCESS_KEY;
+    public static final PropertyDescriptor SECRET_KEY = CredentialPropertyDescriptors.SECRET_KEY;
+
+    public static final PropertyDescriptor PROXY_HOST = new PropertyDescriptor.Builder()
+            .name("Proxy Host")
+            .description("Proxy host name or IP")
+            .expressionLanguageSupported(true)
             .required(false)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
-            .sensitive(true)
             .build();
+
+    public static final PropertyDescriptor PROXY_HOST_PORT = new PropertyDescriptor.Builder()
+            .name("Proxy Host Port")
+            .description("Proxy host port")
+            .expressionLanguageSupported(true)
+            .required(false)
+            .addValidator(StandardValidators.PORT_VALIDATOR)
+            .build();
+
     public static final PropertyDescriptor REGION = new PropertyDescriptor.Builder()
             .name("Region")
             .required(true)
@@ -113,8 +123,8 @@ public abstract class AbstractAWSProcessor<ClientType extends AmazonWebServiceCl
             .addValidator(StandardValidators.URL_VALIDATOR)
             .build();
 
-    private volatile ClientType client;
-    private volatile Region region;
+    protected volatile ClientType client;
+    protected volatile Region region;
 
     // If protocol is changed to be a property, ensure other uses are also changed
     protected static final Protocol DEFAULT_PROTOCOL = Protocol.HTTPS;
@@ -153,6 +163,12 @@ public abstract class AbstractAWSProcessor<ClientType extends AmazonWebServiceCl
             problems.add(new ValidationResult.Builder().input("Access Key").valid(false).explanation("Cannot set both Credentials File and Secret Key/Access Key").build());
         }
 
+        final boolean proxyHostSet = validationContext.getProperty(PROXY_HOST).isSet();
+        final boolean proxyHostPortSet = validationContext.getProperty(PROXY_HOST_PORT).isSet();
+        if ( ((!proxyHostSet) && proxyHostPortSet) || (proxyHostSet && (!proxyHostPortSet)) ) {
+            problems.add(new ValidationResult.Builder().input("Proxy Host Port").valid(false).explanation("Both proxy host and port must be set").build());
+        }
+
         return problems;
     }
 
@@ -174,6 +190,13 @@ public abstract class AbstractAWSProcessor<ClientType extends AmazonWebServiceCl
             config.getApacheHttpClientConfig().setSslSocketFactory(sdkTLSSocketFactory);
         }
 
+        if (context.getProperty(PROXY_HOST).isSet()) {
+            String proxyHost = context.getProperty(PROXY_HOST).getValue();
+            config.setProxyHost(proxyHost);
+            Integer proxyPort = context.getProperty(PROXY_HOST_PORT).asInteger();
+            config.setProxyPort(proxyPort);
+        }
+
         return config;
     }
 
@@ -181,7 +204,10 @@ public abstract class AbstractAWSProcessor<ClientType extends AmazonWebServiceCl
     public void onScheduled(final ProcessContext context) {
         final ClientType awsClient = createClient(context, getCredentials(context), createConfiguration(context));
         this.client = awsClient;
+        intializeRegionAndEndpoint(context);
+    }
 
+    protected void intializeRegionAndEndpoint(ProcessContext context) {
         // if the processor supports REGION, get the configured region.
         if (getSupportedPropertyDescriptors().contains(REGION)) {
             final String region = context.getProperty(REGION).getValue();
@@ -199,8 +225,19 @@ public abstract class AbstractAWSProcessor<ClientType extends AmazonWebServiceCl
         if (!urlstr.isEmpty()) {
             this.client.setEndpoint(urlstr);
         }
+
     }
 
+    /**
+     * Create client from the arguments
+     * @param context process context
+     * @param credentials static aws credentials
+     * @param config aws client configuration
+     * @return ClientType aws client
+     *
+     * @deprecated use {@link AbstractAWSCredentialsProviderProcessor#createClient(ProcessContext, AWSCredentialsProvider, ClientConfiguration)}
+     */
+    @Deprecated
     protected abstract ClientType createClient(final ProcessContext context, final AWSCredentials credentials, final ClientConfiguration config);
 
     protected ClientType getClient() {
@@ -212,8 +249,8 @@ public abstract class AbstractAWSProcessor<ClientType extends AmazonWebServiceCl
     }
 
     protected AWSCredentials getCredentials(final ProcessContext context) {
-        final String accessKey = context.getProperty(ACCESS_KEY).getValue();
-        final String secretKey = context.getProperty(SECRET_KEY).getValue();
+        final String accessKey = context.getProperty(ACCESS_KEY).evaluateAttributeExpressions().getValue();
+        final String secretKey = context.getProperty(SECRET_KEY).evaluateAttributeExpressions().getValue();
 
         final String credentialsFile = context.getProperty(CREDENTIALS_FILE).getValue();
 
@@ -230,10 +267,13 @@ public abstract class AbstractAWSProcessor<ClientType extends AmazonWebServiceCl
         }
 
         return new AnonymousAWSCredentials();
+
     }
 
-    protected boolean isEmpty(final String value) {
-        return value == null || value.trim().equals("");
+    @OnShutdown
+    public void onShutdown() {
+        if ( getClient() != null ) {
+            getClient().shutdown();
+        }
     }
-
 }

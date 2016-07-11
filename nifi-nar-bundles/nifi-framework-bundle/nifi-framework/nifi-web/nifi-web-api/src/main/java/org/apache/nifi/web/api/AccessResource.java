@@ -16,31 +16,12 @@
  */
 package org.apache.nifi.web.api;
 
-import javax.ws.rs.Consumes;
-import javax.ws.rs.GET;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
-
-import io.jsonwebtoken.JwtException;
-import org.apache.nifi.util.NiFiProperties;
 import com.wordnik.swagger.annotations.Api;
 import com.wordnik.swagger.annotations.ApiOperation;
 import com.wordnik.swagger.annotations.ApiParam;
 import com.wordnik.swagger.annotations.ApiResponse;
 import com.wordnik.swagger.annotations.ApiResponses;
-import java.net.URI;
-import java.security.cert.X509Certificate;
-import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import javax.servlet.http.HttpServletRequest;
-import javax.ws.rs.DefaultValue;
-import javax.ws.rs.FormParam;
-import javax.ws.rs.POST;
-import javax.ws.rs.QueryParam;
-import javax.ws.rs.core.Context;
+import io.jsonwebtoken.JwtException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.admin.service.AdministrationException;
 import org.apache.nifi.authentication.AuthenticationResponse;
@@ -49,19 +30,26 @@ import org.apache.nifi.authentication.LoginIdentityProvider;
 import org.apache.nifi.authentication.exception.IdentityAccessException;
 import org.apache.nifi.authentication.exception.InvalidLoginCredentialsException;
 import org.apache.nifi.security.util.CertificateUtils;
-import org.apache.nifi.web.api.dto.AccessStatusDTO;
+import org.apache.nifi.user.NiFiUser;
+import org.apache.nifi.util.FormatUtils;
+import org.apache.nifi.util.NiFiProperties;
 import org.apache.nifi.web.api.dto.AccessConfigurationDTO;
+import org.apache.nifi.web.api.dto.AccessStatusDTO;
 import org.apache.nifi.web.api.dto.RevisionDTO;
-import org.apache.nifi.web.api.entity.AccessStatusEntity;
 import org.apache.nifi.web.api.entity.AccessConfigurationEntity;
+import org.apache.nifi.web.api.entity.AccessStatusEntity;
 import org.apache.nifi.web.api.request.ClientIdParameter;
 import org.apache.nifi.web.security.InvalidAuthenticationException;
 import org.apache.nifi.web.security.ProxiedEntitiesUtils;
 import org.apache.nifi.web.security.UntrustedProxyException;
 import org.apache.nifi.web.security.jwt.JwtAuthenticationFilter;
 import org.apache.nifi.web.security.jwt.JwtService;
+import org.apache.nifi.web.security.kerberos.KerberosService;
+import org.apache.nifi.web.security.otp.OtpService;
 import org.apache.nifi.web.security.token.LoginAuthenticationToken;
-import org.apache.nifi.web.security.token.NiFiAuthortizationRequestToken;
+import org.apache.nifi.web.security.token.NiFiAuthorizationRequestToken;
+import org.apache.nifi.web.security.token.OtpAuthenticationToken;
+import org.apache.nifi.web.security.user.NiFiUserUtils;
 import org.apache.nifi.web.security.x509.X509CertificateExtractor;
 import org.apache.nifi.web.security.x509.X509IdentityProvider;
 import org.slf4j.Logger;
@@ -69,10 +57,29 @@ import org.slf4j.LoggerFactory;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.AccountStatusException;
 import org.springframework.security.authentication.AuthenticationServiceException;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.userdetails.AuthenticationUserDetailsService;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.ws.rs.Consumes;
+import javax.ws.rs.DefaultValue;
+import javax.ws.rs.FormParam;
+import javax.ws.rs.GET;
+import javax.ws.rs.POST;
+import javax.ws.rs.Path;
+import javax.ws.rs.Produces;
+import javax.ws.rs.QueryParam;
+import javax.ws.rs.core.Context;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import java.net.URI;
+import java.security.cert.X509Certificate;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * RESTful endpoint for managing a cluster.
@@ -92,14 +99,17 @@ public class AccessResource extends ApplicationResource {
     private X509CertificateExtractor certificateExtractor;
     private X509IdentityProvider certificateIdentityProvider;
     private JwtService jwtService;
+    private OtpService otpService;
 
-    private AuthenticationUserDetailsService<NiFiAuthortizationRequestToken> userDetailsService;
+    private KerberosService kerberosService;
+
+    private AuthenticationUserDetailsService<NiFiAuthorizationRequestToken> userDetailsService;
 
     /**
      * Retrieves the access configuration for this NiFi.
      *
      * @param httpServletRequest the servlet request
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
+     * @param clientId           Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
      * @return A accessConfigurationEntity
      */
     @GET
@@ -141,7 +151,7 @@ public class AccessResource extends ApplicationResource {
      * Gets the status the client's access.
      *
      * @param httpServletRequest the servlet request
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
+     * @param clientId           Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
      * @return A accessStatusEntity
      */
     @GET
@@ -154,11 +164,11 @@ public class AccessResource extends ApplicationResource {
     )
     @ApiResponses(
             value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Unable to determine access status because the client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Unable to determine access status because the client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "Unable to determine access status because NiFi is not in the appropriate state."),
-                @ApiResponse(code = 500, message = "Unable to determine access status because an unexpected error occurred.")
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Unable to determine access status because the client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Unable to determine access status because the client is not authorized to make this request."),
+                    @ApiResponse(code = 409, message = "Unable to determine access status because NiFi is not in the appropriate state."),
+                    @ApiResponse(code = 500, message = "Unable to determine access status because an unexpected error occurred.")
             }
     )
     public Response getAccessStatus(
@@ -189,11 +199,6 @@ public class AccessResource extends ApplicationResource {
                     accessStatus.setStatus(AccessStatusDTO.Status.UNKNOWN.name());
                     accessStatus.setMessage("No credentials supplied, unknown user.");
                 } else {
-                    // not currently configured for username/password login, don't accept existing tokens
-                    if (loginIdentityProvider == null) {
-                        throw new IllegalStateException("This NiFi is not configured to support username/password logins.");
-                    }
-
                     try {
                         // Extract the Base64 encoded token from the Authorization header
                         final String token = StringUtils.substringAfterLast(authorization, " ");
@@ -285,15 +290,181 @@ public class AccessResource extends ApplicationResource {
      * @throws AuthenticationException if the proxy chain is not authorized
      */
     private UserDetails checkAuthorization(final List<String> proxyChain) throws AuthenticationException {
-        return userDetailsService.loadUserDetails(new NiFiAuthortizationRequestToken(proxyChain));
+        return userDetailsService.loadUserDetails(new NiFiAuthorizationRequestToken(proxyChain));
+    }
+
+    /**
+     * Creates a single use access token for downloading FlowFile content.
+     *
+     * @param httpServletRequest the servlet request
+     * @return A token (string)
+     */
+    @POST
+    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+    @Produces(MediaType.TEXT_PLAIN)
+    @Path("/download-token")
+    @ApiOperation(
+            value = "Creates a single use access token for downloading FlowFile content.",
+            notes = "The token returned is a base64 encoded string. It is valid for a single request up to five minutes from being issued. " +
+                    "It is used as a query parameter name 'access_token'.",
+            response = String.class
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 409, message = "Unable to create the download token because NiFi is not in the appropriate state. " +
+                            "(i.e. may not have any tokens to grant or be configured to support username/password login)"),
+                    @ApiResponse(code = 500, message = "Unable to create download token because an unexpected error occurred.")
+            }
+    )
+    public Response createDownloadToken(@Context HttpServletRequest httpServletRequest) {
+        // only support access tokens when communicating over HTTPS
+        if (!httpServletRequest.isSecure()) {
+            throw new IllegalStateException("Download tokens are only issued over HTTPS.");
+        }
+
+        final NiFiUser user = NiFiUserUtils.getNiFiUser();
+        if (user == null) {
+            throw new AccessDeniedException("Unable to determine user details.");
+        }
+
+        final OtpAuthenticationToken authenticationToken = new OtpAuthenticationToken(user.getIdentity());
+
+        // generate otp for response
+        final String token = otpService.generateDownloadToken(authenticationToken);
+
+        // build the response
+        final URI uri = URI.create(generateResourceUri("access", "download-token"));
+        return generateCreatedResponse(uri, token).build();
+    }
+
+    /**
+     * Creates a single use access token for accessing a NiFi UI extension.
+     *
+     * @param httpServletRequest the servlet request
+     * @return A token (string)
+     */
+    @POST
+    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+    @Produces(MediaType.TEXT_PLAIN)
+    @Path("/ui-extension-token")
+    @ApiOperation(
+            value = "Creates a single use access token for accessing a NiFi UI extension.",
+            notes = "The token returned is a base64 encoded string. It is valid for a single request up to five minutes from being issued. " +
+                    "It is used as a query parameter name 'access_token'.",
+            response = String.class
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 409, message = "Unable to create the download token because NiFi is not in the appropriate state. " +
+                            "(i.e. may not have any tokens to grant or be configured to support username/password login)"),
+                    @ApiResponse(code = 500, message = "Unable to create download token because an unexpected error occurred.")
+            }
+    )
+    public Response createUiExtensionToken(@Context HttpServletRequest httpServletRequest) {
+        // only support access tokens when communicating over HTTPS
+        if (!httpServletRequest.isSecure()) {
+            throw new IllegalStateException("UI extension access tokens are only issued over HTTPS.");
+        }
+
+        final NiFiUser user = NiFiUserUtils.getNiFiUser();
+        if (user == null) {
+            throw new AccessDeniedException("Unable to determine user details.");
+        }
+
+        final OtpAuthenticationToken authenticationToken = new OtpAuthenticationToken(user.getIdentity());
+
+        // generate otp for response
+        final String token = otpService.generateUiExtensionToken(authenticationToken);
+
+        // build the response
+        final URI uri = URI.create(generateResourceUri("access", "ui-extension-token"));
+        return generateCreatedResponse(uri, token).build();
+    }
+
+    /**
+     * Creates a token for accessing the REST API via Kerberos ticket exchange / SPNEGO negotiation.
+     *
+     * @param httpServletRequest the servlet request
+     * @return A JWT (string)
+     */
+    @POST
+    @Consumes(MediaType.TEXT_PLAIN)
+    @Produces(MediaType.TEXT_PLAIN)
+    @Path("/kerberos")
+    @ApiOperation(
+            value = "Creates a token for accessing the REST API via Kerberos ticket exchange / SPNEGO negotiation",
+            notes = "The token returned is formatted as a JSON Web Token (JWT). The token is base64 encoded and comprised of three parts. The header, " +
+                    "the body, and the signature. The expiration of the token is a contained within the body. The token can be used in the Authorization header " +
+                    "in the format 'Authorization: Bearer <token>'.",
+            response = String.class
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "NiFi was unable to complete the request because it did not contain a valid Kerberos " +
+                            "ticket in the Authorization header. Retry this request after initializing a ticket with kinit and " +
+                            "ensuring your browser is configured to support SPNEGO."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 409, message = "Unable to create access token because NiFi is not in the appropriate state. (i.e. may not be configured to support Kerberos login."),
+                    @ApiResponse(code = 500, message = "Unable to create access token because an unexpected error occurred.")
+            }
+    )
+    public Response createAccessTokenFromTicket(
+            @Context HttpServletRequest httpServletRequest) {
+
+        // only support access tokens when communicating over HTTPS
+        if (!httpServletRequest.isSecure()) {
+            throw new IllegalStateException("Access tokens are only issued over HTTPS.");
+        }
+
+        // If Kerberos Service Principal and keytab location not configured, throws exception
+        if (!properties.isKerberosServiceSupportEnabled() || kerberosService == null) {
+            throw new IllegalStateException("Kerberos ticket login not supported by this NiFi.");
+        }
+
+        String authorizationHeaderValue = httpServletRequest.getHeader(KerberosService.AUTHORIZATION_HEADER_NAME);
+
+        if (!kerberosService.isValidKerberosHeader(authorizationHeaderValue)) {
+            final Response response = generateNotAuthorizedResponse().header(KerberosService.AUTHENTICATION_CHALLENGE_HEADER_NAME, KerberosService.AUTHORIZATION_NEGOTIATE).build();
+            return response;
+        } else {
+            try {
+                // attempt to authenticate
+                Authentication authentication = kerberosService.validateKerberosTicket(httpServletRequest);
+
+                if (authentication == null) {
+                    throw new IllegalArgumentException("Request is not HTTPS or Kerberos ticket missing or malformed");
+                }
+
+                final String expirationFromProperties = properties.getKerberosAuthenticationExpiration();
+                long expiration = FormatUtils.getTimeDuration(expirationFromProperties, TimeUnit.MILLISECONDS);
+                final String identity = authentication.getName();
+                expiration = validateTokenExpiration(expiration, identity);
+
+                // create the authentication token
+                final LoginAuthenticationToken loginAuthenticationToken = new LoginAuthenticationToken(identity, expiration, "KerberosService");
+
+
+                // generate JWT for response
+                final String token = jwtService.generateSignedToken(loginAuthenticationToken);
+
+                // build the response
+                final URI uri = URI.create(generateResourceUri("access", "kerberos"));
+                return generateCreatedResponse(uri, token).build();
+            } catch (final AuthenticationException e) {
+                throw new AccessDeniedException(e.getMessage(), e);
+            }
+        }
     }
 
     /**
      * Creates a token for accessing the REST API via username/password.
      *
      * @param httpServletRequest the servlet request
-     * @param username the username
-     * @param password the password
+     * @param username           the username
+     * @param password           the password
      * @return A JWT (string)
      */
     @POST
@@ -302,14 +473,17 @@ public class AccessResource extends ApplicationResource {
     @Path("/token")
     @ApiOperation(
             value = "Creates a token for accessing the REST API via username/password",
+            notes = "The token returned is formatted as a JSON Web Token (JWT). The token is base64 encoded and comprised of three parts. The header, " +
+                    "the body, and the signature. The expiration of the token is a contained within the body. The token can be used in the Authorization header " +
+                    "in the format 'Authorization: Bearer <token>'.",
             response = String.class
     )
     @ApiResponses(
             value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "Unable to create access token because NiFi is not in the appropriate state. (i.e. may not be configured to support username/password login."),
-                @ApiResponse(code = 500, message = "Unable to create access token because an unexpected error occurred.")
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 409, message = "Unable to create access token because NiFi is not in the appropriate state. (i.e. may not be configured to support username/password login."),
+                    @ApiResponse(code = 500, message = "Unable to create access token because an unexpected error occurred.")
             }
     )
     public Response createAccessToken(
@@ -341,21 +515,7 @@ public class AccessResource extends ApplicationResource {
             try {
                 // attempt to authenticate
                 final AuthenticationResponse authenticationResponse = loginIdentityProvider.authenticate(new LoginCredentials(username, password));
-                final long maxExpiration = TimeUnit.MILLISECONDS.convert(12, TimeUnit.HOURS);
-                final long minExpiration = TimeUnit.MILLISECONDS.convert(1, TimeUnit.MINUTES);
-
-                long expiration = authenticationResponse.getExpiration();
-                if (expiration > maxExpiration) {
-                    expiration = maxExpiration;
-
-                    logger.warn(String.format("Max token expiration exceeded. Setting expiration to %s from %s for %s", expiration,
-                            authenticationResponse.getExpiration(), authenticationResponse.getIdentity()));
-                } else if (expiration < minExpiration) {
-                    expiration = minExpiration;
-
-                    logger.warn(String.format("Min token expiration not met. Setting expiration to %s from %s for %s", expiration,
-                            authenticationResponse.getExpiration(), authenticationResponse.getIdentity()));
-                }
+                long expiration = validateTokenExpiration(authenticationResponse.getExpiration(), authenticationResponse.getIdentity());
 
                 // create the authentication token
                 loginAuthenticationToken = new LoginAuthenticationToken(authenticationResponse.getIdentity(), expiration, authenticationResponse.getIssuer());
@@ -399,7 +559,7 @@ public class AccessResource extends ApplicationResource {
     private void authorizeProxyIfNecessary(final List<String> proxyChain) throws AuthenticationException {
         if (proxyChain.size() > 1) {
             try {
-                userDetailsService.loadUserDetails(new NiFiAuthortizationRequestToken(proxyChain));
+                userDetailsService.loadUserDetails(new NiFiAuthorizationRequestToken(proxyChain));
             } catch (final UsernameNotFoundException unfe) {
                 // if a username not found exception was thrown, the proxies were authorized and now
                 // we can issue a new token to the end user which they will use to identify themselves
@@ -412,6 +572,23 @@ public class AccessResource extends ApplicationResource {
                 throw new AccessDeniedException(e.getMessage(), e);
             }
         }
+    }
+
+    private long validateTokenExpiration(long proposedTokenExpiration, String identity) {
+        final long maxExpiration = TimeUnit.MILLISECONDS.convert(12, TimeUnit.HOURS);
+        final long minExpiration = TimeUnit.MILLISECONDS.convert(1, TimeUnit.MINUTES);
+
+        if (proposedTokenExpiration > maxExpiration) {
+            logger.warn(String.format("Max token expiration exceeded. Setting expiration to %s from %s for %s", maxExpiration,
+                    proposedTokenExpiration, identity));
+            proposedTokenExpiration = maxExpiration;
+        } else if (proposedTokenExpiration < minExpiration) {
+            logger.warn(String.format("Min token expiration not met. Setting expiration to %s from %s for %s", minExpiration,
+                    proposedTokenExpiration, identity));
+            proposedTokenExpiration = minExpiration;
+        }
+
+        return proposedTokenExpiration;
     }
 
     // setters
@@ -427,6 +604,14 @@ public class AccessResource extends ApplicationResource {
         this.jwtService = jwtService;
     }
 
+    public void setKerberosService(KerberosService kerberosService) {
+        this.kerberosService = kerberosService;
+    }
+
+    public void setOtpService(OtpService otpService) {
+        this.otpService = otpService;
+    }
+
     public void setCertificateExtractor(X509CertificateExtractor certificateExtractor) {
         this.certificateExtractor = certificateExtractor;
     }
@@ -435,7 +620,7 @@ public class AccessResource extends ApplicationResource {
         this.certificateIdentityProvider = certificateIdentityProvider;
     }
 
-    public void setUserDetailsService(AuthenticationUserDetailsService<NiFiAuthortizationRequestToken> userDetailsService) {
+    public void setUserDetailsService(AuthenticationUserDetailsService<NiFiAuthorizationRequestToken> userDetailsService) {
         this.userDetailsService = userDetailsService;
     }
 

@@ -16,20 +16,27 @@
  */
 package org.apache.nifi.controller.service;
 
+import org.apache.nifi.components.state.StateManager;
+import org.apache.nifi.components.state.StateManagerProvider;
 import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.controller.StandardFlowServiceTest;
 import org.apache.nifi.nar.ExtensionManager;
 import org.apache.nifi.nar.NarClassLoaders;
+import org.apache.nifi.registry.VariableRegistry;
+import org.apache.nifi.registry.VariableRegistryFactory;
+import org.apache.nifi.registry.VariableRegistryUtils;
 import org.apache.nifi.reporting.InitializationException;
 import org.apache.nifi.util.NiFiProperties;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.mockito.Mockito;
 
 public class StandardControllerServiceProviderTest {
 
     private ControllerService proxied;
     private ControllerService implementation;
+    private static VariableRegistry variableRegistry;
 
     @BeforeClass
     public static void setupSuite() throws Exception {
@@ -37,13 +44,38 @@ public class StandardControllerServiceProviderTest {
         NiFiProperties properties = NiFiProperties.getInstance();
         NarClassLoaders.load(properties);
         ExtensionManager.discoverExtensions();
+        VariableRegistry propRegistry = VariableRegistryFactory.getPropertiesInstance(properties.getVariableRegistryPropertiesPaths());
+        variableRegistry = VariableRegistryUtils.createVariableRegistry();
+        variableRegistry.addRegistry(propRegistry);
+
     }
 
     @Before
     public void setup() throws Exception {
         String id = "id";
         String clazz = "org.apache.nifi.controller.service.util.TestControllerService";
-        ControllerServiceProvider provider = new StandardControllerServiceProvider(null, null);
+        ControllerServiceProvider provider = new StandardControllerServiceProvider(null, null, new StateManagerProvider() {
+            @Override
+            public StateManager getStateManager(final String componentId) {
+                return Mockito.mock(StateManager.class);
+            }
+
+            @Override
+            public void shutdown() {
+            }
+
+            @Override
+            public void enableClusterProvider() {
+            }
+
+            @Override
+            public void disableClusterProvider() {
+            }
+
+            @Override
+            public void onComponentRemoved(String componentId) {
+            }
+        }, variableRegistry);
         ControllerServiceNode node = provider.createControllerService(clazz, id, true);
         proxied = node.getProxiedControllerService();
         implementation = node.getControllerServiceImplementation();

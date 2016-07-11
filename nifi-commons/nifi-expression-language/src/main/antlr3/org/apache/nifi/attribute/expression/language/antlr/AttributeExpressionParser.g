@@ -75,11 +75,11 @@ tokens {
 // functions that return Strings
 zeroArgString : (TO_UPPER | TO_LOWER | TRIM | TO_STRING | URL_ENCODE | URL_DECODE) LPAREN! RPAREN!;
 oneArgString : ((SUBSTRING_BEFORE | SUBSTRING_BEFORE_LAST | SUBSTRING_AFTER | SUBSTRING_AFTER_LAST | REPLACE_NULL | REPLACE_EMPTY |
-				PREPEND | APPEND | FORMAT | STARTS_WITH | ENDS_WITH | CONTAINS | JOIN) LPAREN! anyArg RPAREN!) |
+				PREPEND | APPEND | FORMAT | STARTS_WITH | ENDS_WITH | CONTAINS | JOIN | JSON_PATH) LPAREN! anyArg RPAREN!) |
 			   (TO_RADIX LPAREN! anyArg (COMMA! anyArg)? RPAREN!);
-twoArgString : ((REPLACE | REPLACE_ALL) LPAREN! anyArg COMMA! anyArg RPAREN!) |
+twoArgString : ((REPLACE | REPLACE_FIRST | REPLACE_ALL) LPAREN! anyArg COMMA! anyArg RPAREN!) |
 			   (SUBSTRING LPAREN! anyArg (COMMA! anyArg)? RPAREN!);
-
+fiveArgString : GET_DELIMITED_FIELD LPAREN! anyArg (COMMA! anyArg (COMMA! anyArg (COMMA! anyArg (COMMA! anyArg)?)?)?)? RPAREN!;
 
 // functions that return Booleans
 zeroArgBool : (IS_NULL | NOT_NULL | IS_EMPTY | NOT) LPAREN! RPAREN!;
@@ -87,6 +87,7 @@ oneArgBool	: ((FIND | MATCHES | EQUALS_IGNORE_CASE) LPAREN! anyArg RPAREN!) |
 			  (GREATER_THAN | LESS_THAN | GREATER_THAN_OR_EQUAL | LESS_THAN_OR_EQUAL) LPAREN! anyArg RPAREN! |
 			  (EQUALS) LPAREN! anyArg RPAREN! |
 			  (AND | OR) LPAREN! anyArg RPAREN!;
+multiArgBool : (IN) LPAREN! anyArg (COMMA! anyArg)* RPAREN!;
 
 
 // functions that return Numbers
@@ -95,11 +96,11 @@ oneArgNum	: ((INDEX_OF | LAST_INDEX_OF) LPAREN! anyArg RPAREN!) |
 			  (TO_DATE LPAREN! anyArg? RPAREN!) |
 			  ((MOD | PLUS | MINUS | MULTIPLY | DIVIDE) LPAREN! anyArg RPAREN!);
 
-stringFunctionRef : zeroArgString | oneArgString | twoArgString;
-booleanFunctionRef : zeroArgBool | oneArgBool;
+stringFunctionRef : zeroArgString | oneArgString | twoArgString | fiveArgString;
+booleanFunctionRef : zeroArgBool | oneArgBool | multiArgBool;
 numberFunctionRef : zeroArgNum | oneArgNum;
 
-anyArg : NUMBER | numberFunctionRef | STRING_LITERAL | zeroArgString | oneArgString | twoArgString | booleanLiteral | zeroArgBool | oneArgBool | expression;
+anyArg : NUMBER | numberFunctionRef | STRING_LITERAL | zeroArgString | oneArgString | twoArgString | fiveArgString | booleanLiteral | zeroArgBool | oneArgBool | multiArgBool | expression;
 stringArg : STRING_LITERAL | zeroArgString | oneArgString | twoArgString | expression;
 functionRef : stringFunctionRef | booleanFunctionRef | numberFunctionRef;
 
@@ -126,7 +127,7 @@ functionCall : functionRef ->
 	^(FUNCTION_CALL functionRef);
 
 booleanLiteral : TRUE | FALSE;
-zeroArgStandaloneFunction : (IP | UUID | NOW | NEXT_INT | HOSTNAME) LPAREN! RPAREN!;
+zeroArgStandaloneFunction : (IP | UUID | NOW | NEXT_INT | HOSTNAME | RANDOM) LPAREN! RPAREN!;
 oneArgStandaloneFunction : (TO_LITERAL^ LPAREN! anyArg RPAREN!) | 
                            (HOSTNAME^ LPAREN! booleanLiteral RPAREN!);
 standaloneFunction : zeroArgStandaloneFunction | oneArgStandaloneFunction;

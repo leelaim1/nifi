@@ -26,6 +26,7 @@ import org.apache.nifi.attribute.expression.language.Query;
 import org.apache.nifi.attribute.expression.language.StandardPropertyValue;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.connectable.Connectable;
 import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.controller.ControllerServiceLookup;
@@ -33,29 +34,35 @@ import org.apache.nifi.controller.FlowController;
 import org.apache.nifi.controller.service.ControllerServiceProvider;
 import org.apache.nifi.events.BulletinFactory;
 import org.apache.nifi.groups.ProcessGroup;
+import org.apache.nifi.registry.VariableRegistry;
 import org.apache.nifi.reporting.Bulletin;
 import org.apache.nifi.reporting.BulletinRepository;
 import org.apache.nifi.reporting.EventAccess;
 import org.apache.nifi.reporting.ReportingContext;
+import org.apache.nifi.reporting.ReportingTask;
 import org.apache.nifi.reporting.Severity;
 
 public class StandardReportingContext implements ReportingContext, ControllerServiceLookup {
 
     private final FlowController flowController;
     private final EventAccess eventAccess;
+    private final ReportingTask reportingTask;
     private final BulletinRepository bulletinRepository;
     private final ControllerServiceProvider serviceProvider;
     private final Map<PropertyDescriptor, String> properties;
     private final Map<PropertyDescriptor, PreparedQuery> preparedQueries;
+    private final VariableRegistry variableRegistry;
 
     public StandardReportingContext(final FlowController flowController, final BulletinRepository bulletinRepository,
-            final Map<PropertyDescriptor, String> properties, final ControllerServiceProvider serviceProvider) {
+                                    final Map<PropertyDescriptor, String> properties, final ControllerServiceProvider serviceProvider, final ReportingTask reportingTask,
+                                    final VariableRegistry variableRegistry) {
         this.flowController = flowController;
         this.eventAccess = flowController;
         this.bulletinRepository = bulletinRepository;
         this.properties = Collections.unmodifiableMap(properties);
         this.serviceProvider = serviceProvider;
-
+        this.reportingTask = reportingTask;
+        this.variableRegistry = variableRegistry;
         preparedQueries = new HashMap<>();
         for (final Map.Entry<PropertyDescriptor, String> entry : properties.entrySet()) {
             final PropertyDescriptor desc = entry.getKey();
@@ -102,7 +109,7 @@ public class StandardReportingContext implements ReportingContext, ControllerSer
     @Override
     public PropertyValue getProperty(final PropertyDescriptor property) {
         final String configuredValue = properties.get(property);
-        return new StandardPropertyValue(configuredValue == null ? property.getDefaultValue() : configuredValue, this, preparedQueries.get(property));
+        return new StandardPropertyValue(configuredValue == null ? property.getDefaultValue() : configuredValue, this, preparedQueries.get(property), variableRegistry);
     }
 
     @Override
@@ -138,6 +145,11 @@ public class StandardReportingContext implements ReportingContext, ControllerSer
     @Override
     public String getControllerServiceName(final String serviceIdentifier) {
         return serviceProvider.getControllerServiceName(serviceIdentifier);
+    }
+
+    @Override
+    public StateManager getStateManager() {
+        return flowController.getStateManagerProvider().getStateManager(reportingTask.getIdentifier());
     }
 
 }

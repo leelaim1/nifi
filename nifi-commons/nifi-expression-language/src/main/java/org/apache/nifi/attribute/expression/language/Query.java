@@ -18,13 +18,9 @@ package org.apache.nifi.attribute.expression.language;
 
 import java.net.UnknownHostException;
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionLexer;
@@ -50,13 +46,16 @@ import org.apache.nifi.attribute.expression.language.evaluation.functions.Equals
 import org.apache.nifi.attribute.expression.language.evaluation.functions.EqualsIgnoreCaseEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.FindEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.FormatEvaluator;
+import org.apache.nifi.attribute.expression.language.evaluation.functions.GetDelimitedFieldEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.GreaterThanEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.GreaterThanOrEqualEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.HostnameEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.IPEvaluator;
+import org.apache.nifi.attribute.expression.language.evaluation.functions.InEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.IndexOfEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.IsEmptyEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.IsNullEvaluator;
+import org.apache.nifi.attribute.expression.language.evaluation.functions.JsonPathEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.LastIndexOfEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.LengthEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.LessThanEvaluator;
@@ -73,9 +72,11 @@ import org.apache.nifi.attribute.expression.language.evaluation.functions.OneUpS
 import org.apache.nifi.attribute.expression.language.evaluation.functions.OrEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.PlusEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.PrependEvaluator;
+import org.apache.nifi.attribute.expression.language.evaluation.functions.RandomNumberGeneratorEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.ReplaceAllEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.ReplaceEmptyEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.ReplaceEvaluator;
+import org.apache.nifi.attribute.expression.language.evaluation.functions.ReplaceFirstEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.ReplaceNullEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.StartsWithEvaluator;
 import org.apache.nifi.attribute.expression.language.evaluation.functions.StringToDateEvaluator;
@@ -129,6 +130,7 @@ import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpre
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.ATTRIBUTE_REFERENCE;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.ATTR_NAME;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.CONTAINS;
+import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.IN;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.COUNT;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.DIVIDE;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.ENDS_WITH;
@@ -138,6 +140,7 @@ import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpre
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.FALSE;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.FIND;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.FORMAT;
+import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.GET_DELIMITED_FIELD;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.GREATER_THAN;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.GREATER_THAN_OR_EQUAL;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.HOSTNAME;
@@ -146,6 +149,7 @@ import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpre
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.IS_EMPTY;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.IS_NULL;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.JOIN;
+import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.JSON_PATH;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.LAST_INDEX_OF;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.LENGTH;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.LESS_THAN;
@@ -164,8 +168,10 @@ import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpre
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.PLUS;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.PREPEND;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.REPLACE;
+import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.RANDOM;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.REPLACE_ALL;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.REPLACE_EMPTY;
+import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.REPLACE_FIRST;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.REPLACE_NULL;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.STARTS_WITH;
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.STRING_LITERAL;
@@ -188,6 +194,7 @@ import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpre
 import static org.apache.nifi.attribute.expression.language.antlr.AttributeExpressionParser.UUID;
 
 import org.apache.nifi.attribute.expression.language.evaluation.selection.MappingEvaluator;
+import org.apache.nifi.registry.VariableRegistry;
 
 /**
  * Class used for creating and evaluating NiFi Expression Language. Once a Query
@@ -357,8 +364,8 @@ public class Query {
         return -1;
     }
 
-    static String evaluateExpression(final Tree tree, final String queryText, final Map<String, String> expressionMap, final AttributeValueDecorator decorator) throws ProcessException {
-        final Object evaluated = Query.fromTree(tree, queryText).evaluate(expressionMap).getValue();
+    static String evaluateExpression(final Tree tree, final String queryText, final VariableRegistry registry, final AttributeValueDecorator decorator) throws ProcessException {
+        final Object evaluated = Query.fromTree(tree, queryText).evaluate(registry).getValue();
         if (evaluated == null) {
             return null;
         }
@@ -368,29 +375,12 @@ public class Query {
         return decorator == null ? escaped : decorator.decorate(escaped);
     }
 
-    static String evaluateExpressions(final String rawValue, Map<String, String> expressionMap) throws ProcessException {
-        return evaluateExpressions(rawValue, expressionMap, null);
+    static String evaluateExpressions(final String rawValue, VariableRegistry registry) throws ProcessException {
+        return evaluateExpressions(rawValue, registry, null);
     }
 
-    static String evaluateExpressions(final String rawValue) throws ProcessException {
-        return evaluateExpressions(rawValue, createExpressionMap(null), null);
-    }
-
-    static String evaluateExpressions(final String rawValue, final FlowFile flowFile) throws ProcessException {
-        return evaluateExpressions(rawValue, createExpressionMap(flowFile), null);
-    }
-
-    static String evaluateExpressions(final String rawValue, Map<String, String> expressionMap, final AttributeValueDecorator decorator) throws ProcessException {
-        return Query.prepare(rawValue).evaluateExpressions(expressionMap, decorator);
-    }
-
-    public static String evaluateExpressions(final String rawValue, final FlowFile flowFile, final AttributeValueDecorator decorator) throws ProcessException {
-        if (rawValue == null) {
-            return null;
-        }
-
-        final Map<String, String> expressionMap = createExpressionMap(flowFile);
-        return evaluateExpressions(rawValue, expressionMap, decorator);
+    static String evaluateExpressions(final String rawValue, VariableRegistry registry, final AttributeValueDecorator decorator) throws ProcessException {
+        return Query.prepare(rawValue).evaluateExpressions(registry, decorator);
     }
 
     private static Evaluator<?> getRootSubjectEvaluator(final Evaluator<?> evaluator) {
@@ -416,150 +406,6 @@ public class Query {
         return value.replaceAll("\\$\\$(?=\\$*\\{.*?\\})", "\\$");
     }
 
-    static Map<String, String> createExpressionMap(final FlowFile flowFile) {
-        return createExpressionMap(flowFile, null);
-    }
-
-    static Map<String, String> createExpressionMap(final FlowFile flowFile, final Map<String, String> additionalAttributes) {
-        final Map<String, String> attributeMap = flowFile == null ? Collections.<String, String> emptyMap() : flowFile.getAttributes();
-        final Map<String, String> additionalOrEmpty = additionalAttributes == null ? Collections.<String, String> emptyMap() : additionalAttributes;
-        final Map<String, String> envMap = System.getenv();
-        final Map<?, ?> sysProps = System.getProperties();
-
-        final Map<String, String> flowFileProps = new HashMap<>();
-        if (flowFile != null) {
-            flowFileProps.put("flowFileId", String.valueOf(flowFile.getId()));
-            flowFileProps.put("fileSize", String.valueOf(flowFile.getSize()));
-            flowFileProps.put("entryDate", String.valueOf(flowFile.getEntryDate()));
-            flowFileProps.put("lineageStartDate", String.valueOf(flowFile.getLineageStartDate()));
-        }
-
-        return wrap(additionalOrEmpty, attributeMap, flowFileProps, envMap, sysProps);
-    }
-
-    private static Map<String, String> wrap(final Map<String, String> additional, final Map<String, String> attributes, final Map<String, String> flowFileProps,
-        final Map<String, String> env, final Map<?, ?> sysProps) {
-        @SuppressWarnings("rawtypes")
-        final Map[] maps = new Map[] {additional, attributes, flowFileProps, env, sysProps};
-
-        return new Map<String, String>() {
-            @Override
-            public int size() {
-                int size = 0;
-                for (final Map<?, ?> map : maps) {
-                    size += map.size();
-                }
-                return size;
-            }
-
-            @Override
-            public boolean isEmpty() {
-                for (final Map<?, ?> map : maps) {
-                    if (!map.isEmpty()) {
-                        return false;
-                    }
-                }
-                return true;
-            }
-
-            @Override
-            public boolean containsKey(final Object key) {
-                if (key == null) {
-                    return false;
-                }
-                if (!(key instanceof String)) {
-                    return false;
-                }
-
-                for (final Map<?, ?> map : maps) {
-                    if (map.containsKey(key)) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-
-            @Override
-            public boolean containsValue(final Object value) {
-                for (final Map<?, ?> map : maps) {
-                    if (map.containsValue(value)) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-
-            @Override
-            @SuppressWarnings("rawtypes")
-            public String get(final Object key) {
-                if (key == null) {
-                    throw new IllegalArgumentException("Null Keys are not allowed");
-                }
-                if (!(key instanceof String)) {
-                    return null;
-                }
-
-                for (final Map map : maps) {
-                    final Object val = map.get(key);
-                    if (val != null) {
-                        return String.valueOf(val);
-                    }
-                }
-                return null;
-            }
-
-            @Override
-            public String put(String key, String value) {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            public String remove(final Object key) {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            public void putAll(final Map<? extends String, ? extends String> m) {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            public void clear() {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            @SuppressWarnings({"unchecked", "rawtypes"})
-            public Set<String> keySet() {
-                final Set<String> keySet = new HashSet<>();
-                for (final Map map : maps) {
-                    keySet.addAll(map.keySet());
-                }
-                return keySet;
-            }
-
-            @Override
-            @SuppressWarnings({"unchecked", "rawtypes"})
-            public Collection<String> values() {
-                final Set<String> values = new HashSet<>();
-                for (final Map map : maps) {
-                    values.addAll(map.values());
-                }
-                return values;
-            }
-
-            @Override
-            @SuppressWarnings({"unchecked", "rawtypes"})
-            public Set<java.util.Map.Entry<String, String>> entrySet() {
-                final Set<java.util.Map.Entry<String, String>> entrySet = new HashSet<>();
-                for (final Map map : maps) {
-                    entrySet.addAll(map.entrySet());
-                }
-                return entrySet;
-            }
-
-        };
-    }
 
     public static Query fromTree(final Tree tree, final String text) {
         return new Query(text, tree, buildEvaluator(tree));
@@ -696,20 +542,12 @@ public class Query {
         return evaluator.getResultType();
     }
 
-    QueryResult<?> evaluate() {
-        return evaluate(createExpressionMap(null));
-    }
-
-    QueryResult<?> evaluate(final FlowFile flowFile) {
-        return evaluate(createExpressionMap(flowFile));
-    }
-
-    QueryResult<?> evaluate(final Map<String, String> attributes) {
+    QueryResult<?> evaluate(final VariableRegistry registry) {
         if (evaluated.getAndSet(true)) {
             throw new IllegalStateException("A Query cannot be evaluated more than once");
         }
 
-        return evaluator.evaluate(attributes);
+        return evaluator.evaluate(registry.getVariables());
     }
 
     Tree getTree() {
@@ -875,6 +713,9 @@ public class Query {
             }
             case NEXT_INT: {
                 return new OneUpSequenceEvaluator();
+            }
+            case RANDOM: {
+                return new RandomNumberGeneratorEvaluator();
             }
             default:
                 throw new AttributeExpressionLanguageParsingException("Unexpected token: " + tree.toString());
@@ -1117,6 +958,12 @@ public class Query {
                     toStringEvaluator(argEvaluators.get(0), "first argument to replace"),
                     toStringEvaluator(argEvaluators.get(1), "second argument to replace")), "replace");
             }
+            case REPLACE_FIRST: {
+                verifyArgCount(argEvaluators, 2, "replaceFirst");
+                return addToken(new ReplaceFirstEvaluator(toStringEvaluator(subjectEvaluator),
+                        toStringEvaluator(argEvaluators.get(0), "first argument to replaceFirst"),
+                        toStringEvaluator(argEvaluators.get(1), "second argument to replaceFirst")), "replaceFirst");
+            }
             case REPLACE_ALL: {
                 verifyArgCount(argEvaluators, 2, "replaceAll");
                 return addToken(new ReplaceAllEvaluator(toStringEvaluator(subjectEvaluator),
@@ -1180,6 +1027,13 @@ public class Query {
                 verifyArgCount(argEvaluators, 1, "contains");
                 return addToken(new ContainsEvaluator(toStringEvaluator(subjectEvaluator),
                     toStringEvaluator(argEvaluators.get(0), "first argument to contains")), "contains");
+            }
+            case IN: {
+                List<Evaluator<String>> list = new ArrayList<Evaluator<String>>();
+                for(int i = 0; i < argEvaluators.size(); i++) {
+                    list.add(toStringEvaluator(argEvaluators.get(i), i + "th argument to in"));
+                }
+                return addToken(new InEvaluator(toStringEvaluator(subjectEvaluator), list), "in");
             }
             case FIND: {
                 verifyArgCount(argEvaluators, 1, "find");
@@ -1266,6 +1120,9 @@ public class Query {
             case DIVIDE: {
                 return addToken(new DivideEvaluator(toNumberEvaluator(subjectEvaluator), toNumberEvaluator(argEvaluators.get(0))), "divide");
             }
+            case RANDOM : {
+                return addToken(new RandomNumberGeneratorEvaluator(), "random");
+            }
             case INDEX_OF: {
                 verifyArgCount(argEvaluators, 1, "indexOf");
                 return addToken(new IndexOfEvaluator(toStringEvaluator(subjectEvaluator),
@@ -1288,9 +1145,51 @@ public class Query {
             case NOT: {
                 return addToken(new NotEvaluator(toBooleanEvaluator(subjectEvaluator)), "not");
             }
+            case GET_DELIMITED_FIELD: {
+                if (argEvaluators.size() == 1) {
+                    // Only a single argument - the index to return.
+                    return addToken(new GetDelimitedFieldEvaluator(toStringEvaluator(subjectEvaluator),
+                        toNumberEvaluator(argEvaluators.get(0), "first argument of getDelimitedField")), "getDelimitedField");
+                } else if (argEvaluators.size() == 2) {
+                    // two arguments - index and delimiter.
+                    return addToken(new GetDelimitedFieldEvaluator(toStringEvaluator(subjectEvaluator),
+                        toNumberEvaluator(argEvaluators.get(0), "first argument of getDelimitedField"),
+                        toStringEvaluator(argEvaluators.get(1), "second argument of getDelimitedField")),
+                        "getDelimitedField");
+                } else if (argEvaluators.size() == 3) {
+                    // 3 arguments - index, delimiter, quote char.
+                    return addToken(new GetDelimitedFieldEvaluator(toStringEvaluator(subjectEvaluator),
+                        toNumberEvaluator(argEvaluators.get(0), "first argument of getDelimitedField"),
+                        toStringEvaluator(argEvaluators.get(1), "second argument of getDelimitedField"),
+                        toStringEvaluator(argEvaluators.get(2), "third argument of getDelimitedField")),
+                        "getDelimitedField");
+                } else if (argEvaluators.size() == 4) {
+                    // 4 arguments - index, delimiter, quote char, escape char
+                    return addToken(new GetDelimitedFieldEvaluator(toStringEvaluator(subjectEvaluator),
+                        toNumberEvaluator(argEvaluators.get(0), "first argument of getDelimitedField"),
+                        toStringEvaluator(argEvaluators.get(1), "second argument of getDelimitedField"),
+                        toStringEvaluator(argEvaluators.get(2), "third argument of getDelimitedField"),
+                        toStringEvaluator(argEvaluators.get(3), "fourth argument of getDelimitedField")),
+                        "getDelimitedField");
+                } else {
+                    // 5 arguments - index, delimiter, quote char, escape char, strip escape/quote chars flag
+                    return addToken(new GetDelimitedFieldEvaluator(toStringEvaluator(subjectEvaluator),
+                        toNumberEvaluator(argEvaluators.get(0), "first argument of getDelimitedField"),
+                        toStringEvaluator(argEvaluators.get(1), "second argument of getDelimitedField"),
+                        toStringEvaluator(argEvaluators.get(2), "third argument of getDelimitedField"),
+                        toStringEvaluator(argEvaluators.get(3), "fourth argument of getDelimitedField"),
+                        toBooleanEvaluator(argEvaluators.get(4), "fifth argument of getDelimitedField")),
+                        "getDelimitedField");
+                }
+            }
+            case JSON_PATH: {
+                verifyArgCount(argEvaluators, 1, "jsonPath");
+                return addToken(new JsonPathEvaluator(toStringEvaluator(subjectEvaluator),
+                        toStringEvaluator(argEvaluators.get(0), "first argument to jsonPath")), "jsonPath");
+            }
             default:
                 throw new AttributeExpressionLanguageParsingException("Expected a Function-type expression but got " + tree.toString());
-        }
+            }
     }
 
     public static class Range {

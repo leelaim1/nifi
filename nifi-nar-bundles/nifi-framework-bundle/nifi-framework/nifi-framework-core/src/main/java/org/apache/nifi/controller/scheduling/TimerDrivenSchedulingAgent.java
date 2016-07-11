@@ -23,6 +23,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.connectable.Connectable;
 import org.apache.nifi.connectable.ConnectableType;
 import org.apache.nifi.controller.FlowController;
@@ -36,28 +37,31 @@ import org.apache.nifi.engine.FlowEngine;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.StandardProcessContext;
 import org.apache.nifi.processor.exception.ProcessException;
+import org.apache.nifi.registry.VariableRegistry;
 import org.apache.nifi.util.FormatUtils;
 import org.apache.nifi.util.NiFiProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class TimerDrivenSchedulingAgent implements SchedulingAgent {
+public class TimerDrivenSchedulingAgent extends AbstractSchedulingAgent {
 
     private static final Logger logger = LoggerFactory.getLogger(TimerDrivenSchedulingAgent.class);
     private final long noWorkYieldNanos;
 
     private final FlowController flowController;
-    private final FlowEngine flowEngine;
     private final ProcessContextFactory contextFactory;
     private final StringEncryptor encryptor;
+    private final VariableRegistry variableRegistry;
 
     private volatile String adminYieldDuration = "1 sec";
 
-    public TimerDrivenSchedulingAgent(final FlowController flowController, final FlowEngine flowEngine, final ProcessContextFactory contextFactory, final StringEncryptor encryptor) {
+    public TimerDrivenSchedulingAgent(final FlowController flowController, final FlowEngine flowEngine, final ProcessContextFactory contextFactory, final StringEncryptor encryptor,
+                                      final VariableRegistry variableRegistry) {
+        super(flowEngine);
         this.flowController = flowController;
-        this.flowEngine = flowEngine;
         this.contextFactory = contextFactory;
         this.encryptor = encryptor;
+        this.variableRegistry = variableRegistry;
 
         final String boredYieldDuration = NiFiProperties.getInstance().getBoredYieldDuration();
         try {
@@ -67,13 +71,17 @@ public class TimerDrivenSchedulingAgent implements SchedulingAgent {
         }
     }
 
+    private StateManager getStateManager(final String componentId) {
+        return flowController.getStateManagerProvider().getStateManager(componentId);
+    }
+
     @Override
     public void shutdown() {
         flowEngine.shutdown();
     }
 
     @Override
-    public void schedule(final ReportingTaskNode taskNode, final ScheduleState scheduleState) {
+    public void doSchedule(final ReportingTaskNode taskNode, final ScheduleState scheduleState) {
         final Runnable reportingTaskWrapper = new ReportingTaskWrapper(taskNode, scheduleState);
         final long schedulingNanos = taskNode.getSchedulingPeriod(TimeUnit.NANOSECONDS);
 
@@ -86,7 +94,7 @@ public class TimerDrivenSchedulingAgent implements SchedulingAgent {
     }
 
     @Override
-    public void schedule(final Connectable connectable, final ScheduleState scheduleState) {
+    public void doSchedule(final Connectable connectable, final ScheduleState scheduleState) {
 
         final List<ScheduledFuture<?>> futures = new ArrayList<>();
         for (int i = 0; i < connectable.getMaxConcurrentTasks(); i++) {
@@ -96,14 +104,14 @@ public class TimerDrivenSchedulingAgent implements SchedulingAgent {
             // Determine the task to run and create it.
             if (connectable.getConnectableType() == ConnectableType.PROCESSOR) {
                 final ProcessorNode procNode = (ProcessorNode) connectable;
-                final StandardProcessContext standardProcContext = new StandardProcessContext(procNode, flowController, encryptor);
+                final StandardProcessContext standardProcContext = new StandardProcessContext(procNode, flowController, encryptor, getStateManager(connectable.getIdentifier()), variableRegistry);
                 final ContinuallyRunProcessorTask runnableTask = new ContinuallyRunProcessorTask(this, procNode, flowController,
                         contextFactory, scheduleState, standardProcContext);
 
                 continuallyRunTask = runnableTask;
                 processContext = standardProcContext;
             } else {
-                processContext = new ConnectableProcessContext(connectable, encryptor);
+                processContext = new ConnectableProcessContext(connectable, encryptor, getStateManager(connectable.getIdentifier()));
                 continuallyRunTask = new ContinuallyRunConnectableTask(contextFactory, connectable, scheduleState, processContext);
             }
 
@@ -192,7 +200,7 @@ public class TimerDrivenSchedulingAgent implements SchedulingAgent {
     }
 
     @Override
-    public void unschedule(final Connectable connectable, final ScheduleState scheduleState) {
+    public void doUnschedule(final Connectable connectable, final ScheduleState scheduleState) {
         for (final ScheduledFuture<?> future : scheduleState.getFutures()) {
             // stop scheduling to run but do not interrupt currently running tasks.
             future.cancel(false);
@@ -202,7 +210,7 @@ public class TimerDrivenSchedulingAgent implements SchedulingAgent {
     }
 
     @Override
-    public void unschedule(final ReportingTaskNode taskNode, final ScheduleState scheduleState) {
+    public void doUnschedule(final ReportingTaskNode taskNode, final ScheduleState scheduleState) {
         for (final ScheduledFuture<?> future : scheduleState.getFutures()) {
             // stop scheduling to run but do not interrupt currently running tasks.
             future.cancel(false);

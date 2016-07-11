@@ -16,9 +16,28 @@
  */
 package org.apache.nifi.processors.hadoop;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertTrue;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.util.Progressable;
+import org.apache.nifi.components.state.Scope;
+import org.apache.nifi.controller.AbstractControllerService;
+import org.apache.nifi.distributed.cache.client.Deserializer;
+import org.apache.nifi.distributed.cache.client.DistributedMapCacheClient;
+import org.apache.nifi.distributed.cache.client.Serializer;
+import org.apache.nifi.hadoop.KerberosProperties;
+import org.apache.nifi.reporting.InitializationException;
+import org.apache.nifi.util.MockFlowFile;
+import org.apache.nifi.util.NiFiProperties;
+import org.apache.nifi.util.TestRunner;
+import org.apache.nifi.util.TestRunners;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -31,37 +50,27 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.hadoop.util.Progressable;
-import org.apache.nifi.annotation.notification.PrimaryNodeState;
-import org.apache.nifi.controller.AbstractControllerService;
-import org.apache.nifi.distributed.cache.client.Deserializer;
-import org.apache.nifi.distributed.cache.client.DistributedMapCacheClient;
-import org.apache.nifi.distributed.cache.client.Serializer;
-import org.apache.nifi.reporting.InitializationException;
-import org.apache.nifi.util.MockFlowFile;
-import org.apache.nifi.util.TestRunner;
-import org.apache.nifi.util.TestRunners;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class TestListHDFS {
 
     private TestRunner runner;
     private ListHDFSWithMockedFileSystem proc;
     private MockCacheClient service;
+    private NiFiProperties mockNiFiProperties;
+    private KerberosProperties kerberosProperties;
 
     @Before
     public void setup() throws InitializationException {
-        proc = new ListHDFSWithMockedFileSystem();
+        mockNiFiProperties = mock(NiFiProperties.class);
+        when(mockNiFiProperties.getKerberosConfigurationFile()).thenReturn(null);
+        kerberosProperties = KerberosProperties.create(mockNiFiProperties);
+
+        proc = new ListHDFSWithMockedFileSystem(kerberosProperties);
         runner = TestRunners.newTestRunner(proc);
 
         service = new MockCacheClient();
@@ -74,9 +83,14 @@ public class TestListHDFS {
     }
 
     @Test
-    public void testListingHasCorrectAttributes() {
+    public void testListingHasCorrectAttributes() throws InterruptedException {
         proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, false, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testFile.txt")));
 
+        // first iteration will not pick up files because it has to instead check timestamps.
+        // We must then wait long enough to ensure that the listing can be performed safely and
+        // run the Processor again.
+        runner.run();
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(2 * ListHDFS.LISTING_LAG_NANOS));
         runner.run();
 
         runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 1);
@@ -87,12 +101,17 @@ public class TestListHDFS {
 
 
     @Test
-    public void testRecursive() {
+    public void testRecursive() throws InterruptedException {
         proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, false, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testFile.txt")));
 
         proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, true, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testDir")));
         proc.fileSystem.addFileStatus(new Path("/test/testDir"), new FileStatus(1L, false, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testDir/1.txt")));
 
+        // first iteration will not pick up files because it has to instead check timestamps.
+        // We must then wait long enough to ensure that the listing can be performed safely and
+        // run the Processor again.
+        runner.run();
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(2 * ListHDFS.LISTING_LAG_NANOS));
         runner.run();
 
         runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 2);
@@ -113,13 +132,18 @@ public class TestListHDFS {
     }
 
     @Test
-    public void testNotRecursive() {
+    public void testNotRecursive() throws InterruptedException {
         runner.setProperty(ListHDFS.RECURSE_SUBDIRS, "false");
         proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, false, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testFile.txt")));
 
         proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, true, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testDir")));
         proc.fileSystem.addFileStatus(new Path("/test/testDir"), new FileStatus(1L, false, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testDir/1.txt")));
 
+        // first iteration will not pick up files because it has to instead check timestamps.
+        // We must then wait long enough to ensure that the listing can be performed safely and
+        // run the Processor again.
+        runner.run();
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(2 * ListHDFS.LISTING_LAG_NANOS));
         runner.run();
 
         runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 1);
@@ -131,9 +155,14 @@ public class TestListHDFS {
 
 
     @Test
-    public void testNoListUntilUpdateFromRemoteOnPrimaryNodeChange() {
-        proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, false, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testFile.txt")));
+    public void testNoListUntilUpdateFromRemoteOnPrimaryNodeChange() throws IOException, InterruptedException {
+        proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, false, 1, 1L, 1999L, 0L, create777(), "owner", "group", new Path("/test/testFile.txt")));
 
+        // first iteration will not pick up files because it has to instead check timestamps.
+        // We must then wait long enough to ensure that the listing can be performed safely and
+        // run the Processor again.
+        runner.run();
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(2 * ListHDFS.LISTING_LAG_NANOS));
         runner.run();
 
         runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 1);
@@ -145,37 +174,82 @@ public class TestListHDFS {
         runner.clearTransferState();
 
         // add new file to pull
-        proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, false, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testFile2.txt")));
-
-        // trigger primary node change
-        proc.onPrimaryNodeChange(PrimaryNodeState.ELECTED_PRIMARY_NODE);
+        proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, false, 1, 1L, 2000L, 0L, create777(), "owner", "group", new Path("/test/testFile2.txt")));
 
         // cause calls to service to fail
         service.failOnCalls = true;
 
-        runner.run();
-        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 0);
+        runner.getStateManager().setFailOnStateGet(Scope.CLUSTER, true);
 
-        runner.run();
-        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 0);
-
-        final String key = proc.getKey("/test");
-
-        // wait just to a bit to ensure that the timestamp changes when we update the service
-        final Object curVal = service.values.get(key);
+        // Should fail to perform @OnScheduled methods.
         try {
-            Thread.sleep(10L);
-        } catch (final InterruptedException ie) {
+            runner.run();
+            Assert.fail("Processor ran successfully");
+        } catch (final AssertionError e) {
         }
 
-        service.failOnCalls = false;
-        runner.run();
-        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 1);
+        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 0);
 
-        // ensure state saved both locally & remotely
-        assertTrue(proc.localStateSaved);
-        assertNotNull(service.values.get(key));
-        assertNotSame(curVal, service.values.get(key));
+        // Should fail to perform @OnScheduled methods.
+        try {
+            runner.run();
+            Assert.fail("Processor ran successfully");
+        } catch (final AssertionError e) {
+        }
+
+        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 0);
+
+        service.failOnCalls = false;
+        runner.getStateManager().setFailOnStateGet(Scope.CLUSTER, false);
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(2 * ListHDFS.LISTING_LAG_NANOS));
+
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 0);
+        Map<String, String> newState = runner.getStateManager().getState(Scope.CLUSTER).toMap();
+        assertEquals("2000", newState.get(ListHDFS.LISTING_TIMESTAMP_KEY));
+        assertEquals("1999", newState.get(ListHDFS.EMITTED_TIMESTAMP_KEY));
+
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(2 * ListHDFS.LISTING_LAG_NANOS));
+        runner.run();
+
+        newState = runner.getStateManager().getState(Scope.CLUSTER).toMap();
+        assertEquals("2000", newState.get(ListHDFS.LISTING_TIMESTAMP_KEY));
+        assertEquals("2000", newState.get(ListHDFS.EMITTED_TIMESTAMP_KEY));
+
+        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 1);
+    }
+
+    @Test
+    public void testOnlyNewestEntriesHeldBack() throws InterruptedException {
+        proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, false, 1, 1L, 0L, 0L, create777(), "owner", "group", new Path("/test/testFile.txt")));
+        proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, false, 1, 1L, 8L, 0L, create777(), "owner", "group", new Path("/test/testFile2.txt")));
+
+        // this is a directory, so it won't be counted toward the entries
+        proc.fileSystem.addFileStatus(new Path("/test"), new FileStatus(1L, true, 1, 1L, 8L, 0L, create777(), "owner", "group", new Path("/test/testDir")));
+        proc.fileSystem.addFileStatus(new Path("/test/testDir"), new FileStatus(1L, false, 1, 1L, 100L, 0L, create777(), "owner", "group", new Path("/test/testDir/1.txt")));
+        proc.fileSystem.addFileStatus(new Path("/test/testDir"), new FileStatus(1L, false, 1, 1L, 100L, 0L, create777(), "owner", "group", new Path("/test/testDir/2.txt")));
+
+        // The first iteration should pick up 2 files with the smaller timestamps.
+        runner.run();
+        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 2);
+
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(2 * ListHDFS.LISTING_LAG_NANOS));
+        runner.run();
+
+        // Next iteration should pick up the other 2 files, since nothing else was added.
+        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 4);
+
+        proc.fileSystem.addFileStatus(new Path("/test/testDir"), new FileStatus(1L, false, 1, 1L, 110L, 0L, create777(), "owner", "group", new Path("/test/testDir/3.txt")));
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(2 * ListHDFS.LISTING_LAG_NANOS));
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 4);
+
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(2 * ListHDFS.LISTING_LAG_NANOS));
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(ListHDFS.REL_SUCCESS, 5);
     }
 
 
@@ -186,7 +260,16 @@ public class TestListHDFS {
 
     private class ListHDFSWithMockedFileSystem extends ListHDFS {
         private final MockFileSystem fileSystem = new MockFileSystem();
-        private boolean localStateSaved = false;
+        private final KerberosProperties testKerberosProps;
+
+        public ListHDFSWithMockedFileSystem(KerberosProperties kerberosProperties) {
+            this.testKerberosProps = kerberosProperties;
+        }
+
+        @Override
+        protected KerberosProperties getKerberosProperties() {
+            return testKerberosProps;
+        }
 
         @Override
         protected FileSystem getFileSystem() {
@@ -201,12 +284,6 @@ public class TestListHDFS {
         @Override
         protected FileSystem getFileSystem(final Configuration config) throws IOException {
             return fileSystem;
-        }
-
-        @Override
-        protected void persistLocalState(final String directory, final String serializedState) throws IOException {
-            super.persistLocalState(directory, serializedState);
-            localStateSaved = true;
         }
     }
 

@@ -46,6 +46,7 @@ import javax.ws.rs.core.Response.ResponseBuilder;
 import javax.ws.rs.core.UriBuilder;
 import javax.ws.rs.core.UriInfo;
 
+import org.apache.nifi.registry.VariableRegistry;
 import org.apache.nifi.update.attributes.Action;
 import org.apache.nifi.update.attributes.Condition;
 import org.apache.nifi.update.attributes.Criteria;
@@ -148,7 +149,7 @@ public class RuleResource {
             try {
                 criteria.reorder(requestEntity.getRuleOrder());
             } catch (final IllegalArgumentException iae) {
-                throw new WebApplicationException(badRequest(iae.getMessage()));
+                throw new WebApplicationException(iae, badRequest(iae.getMessage()));
             }
         }
 
@@ -157,7 +158,7 @@ public class RuleResource {
             try {
                 criteria.setFlowFilePolicy(FlowFilePolicy.valueOf(requestEntity.getFlowFilePolicy()));
             } catch (final IllegalArgumentException iae) {
-                throw new WebApplicationException(badRequest("The specified matching strategy is unknown: " + requestEntity.getFlowFilePolicy()));
+                throw new WebApplicationException(iae, badRequest("The specified matching strategy is unknown: " + requestEntity.getFlowFilePolicy()));
             }
         }
 
@@ -187,6 +188,7 @@ public class RuleResource {
 
         // get the web context
         final NiFiWebConfigurationContext configurationContext = (NiFiWebConfigurationContext) servletContext.getAttribute("nifi-web-configuration-context");
+        final VariableRegistry variableRegistry = configurationContext.getVariableRegistry();
 
         // ensure the rule has been specified
         if (requestEntity == null || requestEntity.getRule() == null) {
@@ -219,7 +221,7 @@ public class RuleResource {
 
         // load the criteria
         final Criteria criteria = getCriteria(configurationContext, requestContext);
-        final UpdateAttributeModelFactory factory = new UpdateAttributeModelFactory();
+        final UpdateAttributeModelFactory factory = new UpdateAttributeModelFactory(variableRegistry);
 
         // create the new rule
         final Rule rule;
@@ -227,7 +229,7 @@ public class RuleResource {
             rule = factory.createRule(ruleDto);
             rule.setId(uuid);
         } catch (final IllegalArgumentException iae) {
-            throw new WebApplicationException(badRequest(iae.getMessage()));
+            throw new WebApplicationException(iae, badRequest(iae.getMessage()));
         }
 
         // add the rule
@@ -261,14 +263,18 @@ public class RuleResource {
         // generate a new id
         final String uuid = UUID.randomUUID().toString();
 
+        // get the variable registry
+        final NiFiWebConfigurationContext configurationContext = (NiFiWebConfigurationContext) servletContext.getAttribute("nifi-web-configuration-context");
+        final VariableRegistry variableRegistry = configurationContext.getVariableRegistry();
+
         final Condition condition;
         try {
             // create the condition object
-            final UpdateAttributeModelFactory factory = new UpdateAttributeModelFactory();
+            final UpdateAttributeModelFactory factory = new UpdateAttributeModelFactory(variableRegistry);
             condition = factory.createCondition(requestEntity.getCondition());
             condition.setId(uuid);
         } catch (final IllegalArgumentException iae) {
-            throw new WebApplicationException(badRequest(iae.getMessage()));
+            throw new WebApplicationException(iae, badRequest(iae.getMessage()));
         }
 
         // build the response
@@ -295,14 +301,18 @@ public class RuleResource {
         // generate a new id
         final String uuid = UUID.randomUUID().toString();
 
+        // get the variable registry
+        final NiFiWebConfigurationContext configurationContext = (NiFiWebConfigurationContext) servletContext.getAttribute("nifi-web-configuration-context");
+        final VariableRegistry variableRegistry = configurationContext.getVariableRegistry();
+
         final Action action;
         try {
             // create the condition object
-            final UpdateAttributeModelFactory factory = new UpdateAttributeModelFactory();
+            final UpdateAttributeModelFactory factory = new UpdateAttributeModelFactory(variableRegistry);
             action = factory.createAction(requestEntity.getAction());
             action.setId(uuid);
         } catch (final IllegalArgumentException iae) {
-            throw new WebApplicationException(badRequest(iae.getMessage()));
+            throw new WebApplicationException(iae, badRequest(iae.getMessage()));
         }
 
         // build the response
@@ -461,6 +471,8 @@ public class RuleResource {
 
         // get the web context
         final NiFiWebConfigurationContext nifiWebContext = (NiFiWebConfigurationContext) servletContext.getAttribute("nifi-web-configuration-context");
+        // get the variable registry
+        final VariableRegistry variableRegistry = nifiWebContext.getVariableRegistry();
 
         // ensure the rule has been specified
         if (requestEntity == null || requestEntity.getRule() == null) {
@@ -497,7 +509,7 @@ public class RuleResource {
                 requestEntity.getProcessorId(), requestEntity.getRevision(), requestEntity.getClientId());
 
         // load the criteria
-        final UpdateAttributeModelFactory factory = new UpdateAttributeModelFactory();
+        final UpdateAttributeModelFactory factory = new UpdateAttributeModelFactory(variableRegistry);
         final Criteria criteria = getCriteria(nifiWebContext, requestContext);
 
         // attempt to locate the rule
@@ -522,7 +534,7 @@ public class RuleResource {
             rule.setConditions(conditions);
             rule.setActions(actions);
         } catch (final IllegalArgumentException iae) {
-            throw new WebApplicationException(badRequest(iae.getMessage()));
+            throw new WebApplicationException(iae, badRequest(iae.getMessage()));
         }
 
         // add the new rule if application
@@ -598,11 +610,11 @@ public class RuleResource {
             // load the processor configuration
             processorDetails = configurationContext.getComponentDetails(requestContext);
         } catch (final InvalidRevisionException ire) {
-            throw new WebApplicationException(invalidRevision(ire.getMessage()));
+            throw new WebApplicationException(ire, invalidRevision(ire.getMessage()));
         } catch (final Exception e) {
             final String message = String.format("Unable to get UpdateAttribute[id=%s] criteria: %s", requestContext.getId(), e);
             logger.error(message, e);
-            throw new WebApplicationException(error(message));
+            throw new WebApplicationException(e, error(message));
         }
 
         Criteria criteria = null;
@@ -612,7 +624,7 @@ public class RuleResource {
             } catch (final IllegalArgumentException iae) {
                 final String message = String.format("Unable to deserialize existing rules for UpdateAttribute[id=%s]. Deserialization error: %s", requestContext.getId(), iae);
                 logger.error(message, iae);
-                throw new WebApplicationException(error(message));
+                throw new WebApplicationException(iae, error(message));
             }
         }
         // ensure the criteria isn't null
@@ -634,11 +646,11 @@ public class RuleResource {
             // save the annotation data
             configurationContext.setAnnotationData(requestContext, annotationData);
         } catch (final InvalidRevisionException ire) {
-            throw new WebApplicationException(invalidRevision(ire.getMessage()));
+            throw new WebApplicationException(ire, invalidRevision(ire.getMessage()));
         } catch (final Exception e) {
             final String message = String.format("Unable to save UpdateAttribute[id=%s] criteria: %s", requestContext.getId(), e);
             logger.error(message, e);
-            throw new WebApplicationException(error(message));
+            throw new WebApplicationException(e, error(message));
         }
     }
 

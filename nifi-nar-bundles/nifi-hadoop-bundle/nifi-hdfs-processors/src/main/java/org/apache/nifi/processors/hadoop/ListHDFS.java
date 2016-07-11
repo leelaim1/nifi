@@ -16,21 +16,6 @@
  */
 package org.apache.nifi.processors.hadoop;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
-
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -38,6 +23,7 @@ import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.nifi.annotation.behavior.InputRequirement;
 import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.Stateful;
 import org.apache.nifi.annotation.behavior.TriggerSerially;
 import org.apache.nifi.annotation.behavior.TriggerWhenEmpty;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
@@ -45,9 +31,11 @@ import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
-import org.apache.nifi.annotation.notification.OnPrimaryNodeStateChange;
-import org.apache.nifi.annotation.notification.PrimaryNodeState;
+import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.state.Scope;
+import org.apache.nifi.components.state.StateManager;
+import org.apache.nifi.components.state.StateMap;
 import org.apache.nifi.distributed.cache.client.DistributedMapCacheClient;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
@@ -58,12 +46,24 @@ import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.processors.hadoop.util.HDFSListing;
+import org.apache.nifi.processors.hadoop.util.HDFSListing.StateKeys;
 import org.apache.nifi.processors.hadoop.util.StringSerDe;
-import org.codehaus.jackson.JsonGenerationException;
 import org.codehaus.jackson.JsonNode;
 import org.codehaus.jackson.JsonParseException;
 import org.codehaus.jackson.map.JsonMappingException;
 import org.codehaus.jackson.map.ObjectMapper;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.TimeUnit;
 
 
 @TriggerSerially
@@ -87,13 +87,17 @@ import org.codehaus.jackson.map.ObjectMapper;
     @WritesAttribute(attribute="hdfs.permissions", description="The permissions for the file in HDFS. This is formatted as 3 characters for the owner, "
             + "3 for the group, and 3 for other users. For example rw-rw-r--")
 })
+@Stateful(scopes = Scope.CLUSTER, description = "After performing a listing of HDFS files, the timestamp of the newest file is stored, "
+    + "along with the filenames of all files that share that same timestamp. This allows the Processor to list only files that have been added or modified after "
+    + "this date the next time that the Processor is run. State is stored across the cluster so that this Processor can be run on Primary Node only and if a new Primary "
+    + "Node is selected, the new node can pick up where the previous node left off, without duplicating the data.")
 @SeeAlso({GetHDFS.class, FetchHDFS.class, PutHDFS.class})
 public class ListHDFS extends AbstractHadoopProcessor {
     public static final PropertyDescriptor DISTRIBUTED_CACHE_SERVICE = new PropertyDescriptor.Builder()
         .name("Distributed Cache Service")
         .description("Specifies the Controller Service that should be used to maintain state about what has been pulled from HDFS so that if a new node "
                 + "begins pulling data, it won't duplicate all of the work that has been done.")
-        .required(true)
+        .required(false)
         .identifiesControllerService(DistributedMapCacheClient.class)
         .build();
 
@@ -118,9 +122,15 @@ public class ListHDFS extends AbstractHadoopProcessor {
         .description("All FlowFiles are transferred to this relationship")
         .build();
 
-    private volatile Long lastListingTime = null;
-    private volatile Set<Path> latestPathsListed = new HashSet<>();
-    private volatile boolean electedPrimaryNode = false;
+    private volatile long latestTimestampListed = -1L;
+    private volatile long latestTimestampEmitted = -1L;
+    private volatile boolean electedPrimaryNodeSinceLastIteration = false;
+    private volatile long lastRunTimestamp = -1L;
+
+    static final String LISTING_TIMESTAMP_KEY = "listing.timestamp";
+    static final String EMITTED_TIMESTAMP_KEY = "emitted.timestamp";
+
+    static final long LISTING_LAG_NANOS = TimeUnit.MILLISECONDS.toNanos(100L);
 
     @Override
     protected void init(final ProcessorInitializationContext context) {
@@ -133,15 +143,11 @@ public class ListHDFS extends AbstractHadoopProcessor {
 
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
-        final List<PropertyDescriptor> properties = new ArrayList<>();
-        properties.add(HADOOP_CONFIGURATION_RESOURCES);
-        properties.add(DISTRIBUTED_CACHE_SERVICE);
-        properties.add(DIRECTORY);
-        properties.add(RECURSE_SUBDIRS);
-        properties.add(KERBEROS_PRINCIPAL);
-        properties.add(KERBEROS_KEYTAB);
-        properties.add(KERBEROS_RELOGIN_PERIOD);
-        return properties;
+        final List<PropertyDescriptor> props = new ArrayList<>(properties);
+        props.add(DISTRIBUTED_CACHE_SERVICE);
+        props.add(DIRECTORY);
+        props.add(RECURSE_SUBDIRS);
+        return props;
     }
 
     @Override
@@ -155,18 +161,11 @@ public class ListHDFS extends AbstractHadoopProcessor {
         return getIdentifier() + ".lastListingTime." + directory;
     }
 
-    @OnPrimaryNodeStateChange
-    public void onPrimaryNodeChange(final PrimaryNodeState newState) {
-        if ( newState == PrimaryNodeState.ELECTED_PRIMARY_NODE ) {
-            electedPrimaryNode = true;
-        }
-    }
-
     @Override
     public void onPropertyModified(final PropertyDescriptor descriptor, final String oldValue, final String newValue) {
-        if ( descriptor.equals(DIRECTORY) ) {
-            lastListingTime = null; // clear lastListingTime so that we have to fetch new time
-            latestPathsListed = new HashSet<>();
+        if (isConfigurationRestored() && descriptor.equals(DIRECTORY)) {
+            latestTimestampEmitted = -1L;
+            latestTimestampListed = -1L;
         }
     }
 
@@ -176,83 +175,192 @@ public class ListHDFS extends AbstractHadoopProcessor {
         return mapper.readValue(jsonNode, HDFSListing.class);
     }
 
+    /**
+     * Transitions state from the Distributed cache service to the state manager. This will be
+     * removed in NiFi 1.x
+     *
+     * @param context the ProcessContext
+     * @throws IOException if unable to communicate with state manager or controller service
+     */
+    @Deprecated
+    @OnScheduled
+    public void moveStateToStateManager(final ProcessContext context) throws IOException {
+        final StateManager stateManager = context.getStateManager();
+        final StateMap stateMap = stateManager.getState(Scope.CLUSTER);
 
-    private Long getMinTimestamp(final String directory, final DistributedMapCacheClient client) throws IOException {
-        // Determine the timestamp for the last file that we've listed.
-        Long minTimestamp = lastListingTime;
-        if ( minTimestamp == null || electedPrimaryNode ) {
-            // We haven't yet restored any state from local or distributed state - or it's been at least a minute since
-            // we have performed a listing. In this case,
-            // First, attempt to get timestamp from distributed cache service.
-            try {
-                final StringSerDe serde = new StringSerDe();
-                final String serializedState = client.get(getKey(directory), serde, serde);
-                if ( serializedState == null || serializedState.isEmpty() ) {
-                    minTimestamp = null;
-                    this.latestPathsListed = Collections.emptySet();
-                } else {
-                    final HDFSListing listing = deserialize(serializedState);
-                    this.lastListingTime = listing.getLatestTimestamp().getTime();
-                    minTimestamp = listing.getLatestTimestamp().getTime();
-                    this.latestPathsListed = listing.toPaths();
-                }
-
-                this.lastListingTime = minTimestamp;
-                electedPrimaryNode = false; // no requirement to pull an update from the distributed cache anymore.
-            } catch (final IOException ioe) {
-                throw ioe;
+        // Check if we have already stored state in the cluster state manager.
+        if (stateMap.getVersion() == -1L) {
+            final HDFSListing serviceListing = getListingFromService(context);
+            if (serviceListing != null) {
+                context.getStateManager().setState(serviceListing.toMap(), Scope.CLUSTER);
             }
+        }
+    }
 
-            // Check the persistence file. We want to use the latest timestamp that we have so that
-            // we don't duplicate data.
-            try {
-                final File persistenceFile = getPersistenceFile();
-                if ( persistenceFile.exists() ) {
-                    try (final FileInputStream fis = new FileInputStream(persistenceFile)) {
-                        final Properties props = new Properties();
-                        props.load(fis);
+    @Deprecated
+    private HDFSListing getListingFromService(final ProcessContext context) throws IOException {
+        final DistributedMapCacheClient client = context.getProperty(DISTRIBUTED_CACHE_SERVICE).asControllerService(DistributedMapCacheClient.class);
+        if (client == null) {
+            return null;
+        }
 
-                        // get the local timestamp for this directory, if it exists.
-                        final String locallyPersistedValue = props.getProperty(directory);
-                        if ( locallyPersistedValue != null ) {
-                            final HDFSListing listing = deserialize(locallyPersistedValue);
-                            final long localTimestamp = listing.getLatestTimestamp().getTime();
+        final String directory = context.getProperty(DIRECTORY).getValue();
+        final String remoteValue = client.get(getKey(directory), new StringSerDe(), new StringSerDe());
+        if (remoteValue == null) {
+            return null;
+        }
 
-                            // If distributed state doesn't have an entry or the local entry is later than the distributed state,
-                            // update the distributed state so that we are in sync.
-                            if (minTimestamp == null || localTimestamp > minTimestamp) {
-                                minTimestamp = localTimestamp;
+        try {
+            return deserialize(remoteValue);
+        } catch (final Exception e) {
+            getLogger().error("Failed to retrieve state from Distributed Map Cache because the content that was retrieved could not be understood", e);
+            return null;
+        }
+    }
 
-                                // Our local persistence file shows a later time than the Distributed service.
-                                // Update the distributed service to match our local state.
-                                try {
-                                    final StringSerDe serde = new StringSerDe();
-                                    client.put(getKey(directory), locallyPersistedValue, serde, serde);
-                                } catch (final IOException ioe) {
-                                    getLogger().warn("Local timestamp for {} is {}, which is later than Distributed state but failed to update Distributed "
-                                            + "state due to {}. If a new node performs HDFS Listing, data duplication may occur",
-                                            new Object[] {directory, locallyPersistedValue, ioe});
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (final IOException ioe) {
-                getLogger().warn("Failed to recover local state due to {}. Assuming that the state from the distributed cache is correct.", ioe);
-            }
+    /**
+     * Restores state information from the 'old' style of storing state. This is deprecated and will no longer be supported
+     * in the 1.x NiFi baseline
+     *
+     * @param directory the directory that the listing was performed against
+     * @param remoteListing the remote listing
+     * @return the minimum timestamp that should be used for new entries
+     */
+    @Deprecated
+    private Long restoreTimestampFromOldStateFormat(final String directory, final HDFSListing remoteListing) {
+        // No cluster-wide state has been recovered. Just use whatever values we already have.
+        if (remoteListing == null) {
+            return latestTimestampListed;
+        }
+
+        // If our local timestamp is already later than the remote listing's timestamp, use our local info.
+        Long minTimestamp = latestTimestampListed;
+        if (minTimestamp != null && minTimestamp > remoteListing.getLatestTimestamp().getTime()) {
+            return minTimestamp;
+        }
+
+        // Use the remote listing's information.
+        if (minTimestamp == null || electedPrimaryNodeSinceLastIteration) {
+            this.latestTimestampListed = remoteListing.getLatestTimestamp().getTime();
+            this.latestTimestampEmitted = this.latestTimestampListed;
         }
 
         return minTimestamp;
     }
 
+
+    /**
+     * Determines which of the given FileStatus's describes a File that should be listed.
+     *
+     * @param statuses the eligible FileStatus objects that we could potentially list
+     * @return a Set containing only those FileStatus objects that we want to list
+     */
+    Set<FileStatus> determineListable(final Set<FileStatus> statuses) {
+        final long minTimestamp = this.latestTimestampListed;
+        final TreeMap<Long, List<FileStatus>> orderedEntries = new TreeMap<>();
+
+        // Build a sorted map to determine the latest possible entries
+        for (final FileStatus status : statuses) {
+            if (status.getPath().getName().endsWith("_COPYING_")) {
+                continue;
+            }
+
+            final long entityTimestamp = status.getModificationTime();
+
+            if (entityTimestamp > latestTimestampListed) {
+                latestTimestampListed = entityTimestamp;
+            }
+
+            // New entries are all those that occur at or after the associated timestamp
+            final boolean newEntry = entityTimestamp >= minTimestamp && entityTimestamp > latestTimestampEmitted;
+
+            if (newEntry) {
+                List<FileStatus> entitiesForTimestamp = orderedEntries.get(status.getModificationTime());
+                if (entitiesForTimestamp == null) {
+                    entitiesForTimestamp = new ArrayList<FileStatus>();
+                    orderedEntries.put(status.getModificationTime(), entitiesForTimestamp);
+                }
+                entitiesForTimestamp.add(status);
+            }
+        }
+
+        final Set<FileStatus> toList = new HashSet<>();
+
+        if (orderedEntries.size() > 0) {
+            long latestListingTimestamp = orderedEntries.lastKey();
+
+            // If the last listing time is equal to the newest entries previously seen,
+            // another iteration has occurred without new files and special handling is needed to avoid starvation
+            if (latestListingTimestamp == minTimestamp) {
+                // We are done if the latest listing timestamp is equal to the last processed time,
+                // meaning we handled those items originally passed over
+                if (latestListingTimestamp == latestTimestampEmitted) {
+                    return Collections.emptySet();
+                }
+            } else {
+                // Otherwise, newest entries are held back one cycle to avoid issues in writes occurring exactly when the listing is being performed to avoid missing data
+                orderedEntries.remove(latestListingTimestamp);
+            }
+
+            for (List<FileStatus> timestampEntities : orderedEntries.values()) {
+                for (FileStatus status : timestampEntities) {
+                    toList.add(status);
+                }
+            }
+        }
+
+        return toList;
+    }
+
+
+
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) throws ProcessException {
-        final String directory = context.getProperty(DIRECTORY).getValue();
-        final DistributedMapCacheClient client = context.getProperty(DISTRIBUTED_CACHE_SERVICE).asControllerService(DistributedMapCacheClient.class);
+        // We have to ensure that we don't continually perform listings, because if we perform two listings within
+        // the same millisecond, our algorithm for comparing timestamps will not work. So we ensure here that we do
+        // not let that happen.
+        final long now = System.nanoTime();
+        if (now - lastRunTimestamp < LISTING_LAG_NANOS) {
+            lastRunTimestamp = now;
+            context.yield();
+            return;
+        }
+        lastRunTimestamp = now;
 
-        final Long minTimestamp;
+        final String directory = context.getProperty(DIRECTORY).getValue();
+
+        // Ensure that we are using the latest listing information before we try to perform a listing of HDFS files.
         try {
-            minTimestamp = getMinTimestamp(directory, client);
+            final StateMap stateMap = context.getStateManager().getState(Scope.CLUSTER);
+            if (stateMap.getVersion() == -1L) {
+                latestTimestampEmitted = -1L;
+                latestTimestampListed = -1L;
+                getLogger().debug("Found no state stored");
+            } else {
+                // Determine if state is stored in the 'new' format or the 'old' format
+                final String emittedString = stateMap.get(EMITTED_TIMESTAMP_KEY);
+                if (emittedString == null && stateMap.get(StateKeys.TIMESTAMP) != null) {
+                    // state is stored in the old format with XML
+                    final Map<String, String> stateValues = stateMap.toMap();
+                    final HDFSListing stateListing = HDFSListing.fromMap(stateValues);
+                    getLogger().debug("Found old-style state stored");
+                    restoreTimestampFromOldStateFormat(directory, stateListing);
+                } else if (emittedString == null) {
+                    latestTimestampEmitted = -1L;
+                    latestTimestampListed = -1L;
+                    getLogger().debug("Found no recognized state keys; assuming no relevant state and resetting listing/emitted time to -1");
+                } else {
+                    // state is stored in the new format, using just two timestamps
+                    latestTimestampEmitted = Long.parseLong(emittedString);
+                    final String listingTimestmapString = stateMap.get(LISTING_TIMESTAMP_KEY);
+                    if (listingTimestmapString != null) {
+                        latestTimestampListed = Long.parseLong(listingTimestmapString);
+                    }
+
+                    getLogger().debug("Found new-style state stored, latesting timestamp emitted = {}, latest listed = {}",
+                        new Object[] {latestTimestampEmitted, latestTimestampListed});
+                }
+            }
         } catch (final IOException ioe) {
             getLogger().error("Failed to retrieve timestamp of last listing from Distributed Cache Service. Will not perform listing until this is accomplished.");
             context.yield();
@@ -264,95 +372,55 @@ public class ListHDFS extends AbstractHadoopProcessor {
         final boolean recursive = context.getProperty(RECURSE_SUBDIRS).asBoolean();
         final Path rootPath = new Path(directory);
 
-        int listCount = 0;
-        Long latestListingModTime = null;
         final Set<FileStatus> statuses;
         try {
             statuses = getStatuses(rootPath, recursive, hdfs);
-            for ( final FileStatus status : statuses ) {
-                // don't get anything where the last modified timestamp is equal to our current timestamp.
-                // if we do, then we run the risk of multiple files having the same last mod date but us only
-                // seeing a portion of them.
-                // I.e., there could be 5 files with last mod date = (now). But if we do the listing now, maybe
-                // only 2 exist and 3 more will exist later in this millisecond. So we ignore anything with a
-                // modified date not before the current time.
-                final long fileModTime = status.getModificationTime();
-
-                // we only want the file if its timestamp is later than the minTimestamp or equal to and we didn't pull it last time.
-                // Also, HDFS creates files with the suffix _COPYING_ when they are being written - we want to ignore those.
-                boolean fetch = !status.getPath().getName().endsWith("_COPYING_")
-                        && (minTimestamp == null || fileModTime > minTimestamp || (fileModTime == minTimestamp && !latestPathsListed.contains(status.getPath())));
-
-                // Create the FlowFile for this path.
-                if ( fetch ) {
-                    final Map<String, String> attributes = createAttributes(status);
-                    FlowFile flowFile = session.create();
-                    flowFile = session.putAllAttributes(flowFile, attributes);
-                    session.transfer(flowFile, REL_SUCCESS);
-                    listCount++;
-
-                    if ( latestListingModTime == null || fileModTime > latestListingModTime ) {
-                        latestListingModTime = fileModTime;
-                    }
-                }
-            }
+            getLogger().debug("Found a total of {} files in HDFS", new Object[] {statuses.size()});
         } catch (final IOException ioe) {
             getLogger().error("Failed to perform listing of HDFS due to {}", new Object[] {ioe});
             return;
         }
 
+        final Set<FileStatus> listable = determineListable(statuses);
+        getLogger().debug("Of the {} files found in HDFS, {} are listable", new Object[] {statuses.size(), listable.size()});
+
+        for (final FileStatus status : listable) {
+            final Map<String, String> attributes = createAttributes(status);
+            FlowFile flowFile = session.create();
+            flowFile = session.putAllAttributes(flowFile, attributes);
+            session.transfer(flowFile, REL_SUCCESS);
+
+            final long fileModTime = status.getModificationTime();
+            if (fileModTime > latestTimestampEmitted) {
+                latestTimestampEmitted = fileModTime;
+            }
+        }
+
+        final int listCount = listable.size();
         if ( listCount > 0 ) {
             getLogger().info("Successfully created listing with {} new files from HDFS", new Object[] {listCount});
             session.commit();
-
-            // We have performed a listing and pushed the FlowFiles out.
-            // Now, we need to persist state about the Last Modified timestamp of the newest file
-            // that we pulled in. We do this in order to avoid pulling in the same file twice.
-            // However, we want to save the state both locally and remotely.
-            // We store the state remotely so that if a new Primary Node is chosen, it can pick up where the
-            // previously Primary Node left off.
-            // We also store the state locally so that if the node is restarted, and the node cannot contact
-            // the distributed state cache, the node can continue to run (if it is primary node).
-            String serializedState = null;
-            try {
-                serializedState = serializeState(latestListingModTime, statuses);
-            } catch (final Exception e) {
-                getLogger().error("Failed to serialize state due to {}", new Object[] {e});
-            }
-
-            if ( serializedState != null ) {
-                // Save our state locally.
-                try {
-                    persistLocalState(directory, serializedState);
-                } catch (final IOException ioe) {
-                    getLogger().warn("Unable to save state locally. If the node is restarted now, data may be duplicated. Failure is due to {}", ioe);
-                }
-
-                // Attempt to save state to remote server.
-                try {
-                    client.put(getKey(directory), serializedState, new StringSerDe(), new StringSerDe());
-                } catch (final IOException ioe) {
-                    getLogger().warn("Unable to communicate with distributed cache server due to {}. Persisting state locally instead.", ioe);
-                }
-            }
-
-            lastListingTime = latestListingModTime;
         } else {
             getLogger().debug("There is no data to list. Yielding.");
             context.yield();
+        }
 
-            // lastListingTime = 0 so that we don't continually poll the distributed cache / local file system
-            if ( lastListingTime == null ) {
-                lastListingTime = 0L;
-            }
+        final Map<String, String> updatedState = new HashMap<>(1);
+        updatedState.put(LISTING_TIMESTAMP_KEY, String.valueOf(latestTimestampListed));
+        updatedState.put(EMITTED_TIMESTAMP_KEY, String.valueOf(latestTimestampEmitted));
+        getLogger().debug("New state map: {}", new Object[] {updatedState});
 
-            return;
+        try {
+            context.getStateManager().setState(updatedState, Scope.CLUSTER);
+        } catch (final IOException ioe) {
+            getLogger().warn("Failed to save cluster-wide state. If NiFi is restarted, data duplication may occur", ioe);
         }
     }
 
     private Set<FileStatus> getStatuses(final Path path, final boolean recursive, final FileSystem hdfs) throws IOException {
         final Set<FileStatus> statusSet = new HashSet<>();
 
+        getLogger().debug("Fetching listing for {}", new Object[] {path});
         final FileStatus[] statuses = hdfs.listStatus(path);
 
         for ( final FileStatus status : statuses ) {
@@ -370,73 +438,6 @@ public class ListHDFS extends AbstractHadoopProcessor {
         }
 
         return statusSet;
-    }
-
-
-    private String serializeState(final long latestListingTime, final Set<FileStatus> statuses) throws JsonGenerationException, JsonMappingException, IOException {
-        // we need to keep track of all files that we pulled in that had a modification time equal to
-        // lastListingTime so that we can avoid pulling those files in again. We can't just ignore any files
-        // that have a mod time equal to that timestamp because more files may come in with the same timestamp
-        // later in the same millisecond.
-        if ( statuses.isEmpty() ) {
-            return null;
-        } else {
-            final List<FileStatus> sortedStatuses = new ArrayList<>(statuses);
-            Collections.sort(sortedStatuses, new Comparator<FileStatus>() {
-                @Override
-                public int compare(final FileStatus o1, final FileStatus o2) {
-                    return Long.compare(o1.getModificationTime(), o2.getModificationTime());
-                }
-            });
-
-            final long latestListingModTime = sortedStatuses.get(sortedStatuses.size() - 1).getModificationTime();
-            final Set<Path> pathsWithModTimeEqualToListingModTime = new HashSet<>();
-            for (int i=sortedStatuses.size() - 1; i >= 0; i--) {
-                final FileStatus status = sortedStatuses.get(i);
-                if (status.getModificationTime() == latestListingModTime) {
-                    pathsWithModTimeEqualToListingModTime.add(status.getPath());
-                }
-            }
-
-            this.latestPathsListed = pathsWithModTimeEqualToListingModTime;
-
-            final HDFSListing listing = new HDFSListing();
-            listing.setLatestTimestamp(new Date(latestListingModTime));
-            final Set<String> paths = new HashSet<>();
-            for ( final Path path : pathsWithModTimeEqualToListingModTime ) {
-                paths.add(path.toUri().toString());
-            }
-            listing.setMatchingPaths(paths);
-
-            final ObjectMapper mapper = new ObjectMapper();
-            final String serializedState = mapper.writerWithType(HDFSListing.class).writeValueAsString(listing);
-            return serializedState;
-        }
-    }
-
-    protected void persistLocalState(final String directory, final String serializedState) throws IOException {
-        // we need to keep track of all files that we pulled in that had a modification time equal to
-        // lastListingTime so that we can avoid pulling those files in again. We can't just ignore any files
-        // that have a mod time equal to that timestamp because more files may come in with the same timestamp
-        // later in the same millisecond.
-        final File persistenceFile = getPersistenceFile();
-        final File dir = persistenceFile.getParentFile();
-        if ( !dir.exists() && !dir.mkdirs() ) {
-            throw new IOException("Could not create directory " + dir.getAbsolutePath() + " in order to save local state");
-        }
-
-        final Properties props = new Properties();
-        if ( persistenceFile.exists() ) {
-            try (final FileInputStream fis = new FileInputStream(persistenceFile)) {
-                props.load(fis);
-            }
-        }
-
-        props.setProperty(directory, serializedState);
-
-        try (final FileOutputStream fos = new FileOutputStream(persistenceFile)) {
-            props.store(fos, null);
-        }
     }
 
     private String getAbsolutePath(final Path path) {
@@ -464,19 +465,19 @@ public class ListHDFS extends AbstractHadoopProcessor {
 
     private String getPerms(final FsAction action) {
         final StringBuilder sb = new StringBuilder();
-        if ( action.implies(FsAction.READ) ) {
+        if (action.implies(FsAction.READ)) {
             sb.append("r");
         } else {
             sb.append("-");
         }
 
-        if ( action.implies(FsAction.WRITE) ) {
+        if (action.implies(FsAction.WRITE)) {
             sb.append("w");
         } else {
             sb.append("-");
         }
 
-        if ( action.implies(FsAction.EXECUTE) ) {
+        if (action.implies(FsAction.EXECUTE)) {
             sb.append("x");
         } else {
             sb.append("-");

@@ -22,6 +22,7 @@ import org.apache.nifi.action.Action;
 import org.apache.nifi.admin.service.AuditService;
 import org.apache.nifi.admin.service.UserService;
 import org.apache.nifi.annotation.lifecycle.OnAdded;
+import org.apache.nifi.annotation.lifecycle.OnConfigurationRestored;
 import org.apache.nifi.annotation.lifecycle.OnRemoved;
 import org.apache.nifi.annotation.lifecycle.OnShutdown;
 import org.apache.nifi.annotation.notification.OnPrimaryNodeStateChange;
@@ -37,6 +38,7 @@ import org.apache.nifi.cluster.protocol.UnknownServiceAddressException;
 import org.apache.nifi.cluster.protocol.message.HeartbeatMessage;
 import org.apache.nifi.cluster.protocol.message.NodeBulletinsMessage;
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.state.StateManagerProvider;
 import org.apache.nifi.connectable.Connectable;
 import org.apache.nifi.connectable.ConnectableType;
 import org.apache.nifi.connectable.Connection;
@@ -71,6 +73,7 @@ import org.apache.nifi.controller.repository.StandardCounterRepository;
 import org.apache.nifi.controller.repository.StandardFlowFileRecord;
 import org.apache.nifi.controller.repository.StandardRepositoryRecord;
 import org.apache.nifi.controller.repository.SwapManagerInitializationContext;
+import org.apache.nifi.controller.repository.SwapSummary;
 import org.apache.nifi.controller.repository.claim.ContentClaim;
 import org.apache.nifi.controller.repository.claim.ContentDirection;
 import org.apache.nifi.controller.repository.claim.ResourceClaim;
@@ -88,6 +91,8 @@ import org.apache.nifi.controller.service.ControllerServiceNode;
 import org.apache.nifi.controller.service.ControllerServiceProvider;
 import org.apache.nifi.controller.service.StandardConfigurationContext;
 import org.apache.nifi.controller.service.StandardControllerServiceProvider;
+import org.apache.nifi.controller.state.manager.StandardStateManagerProvider;
+import org.apache.nifi.controller.state.server.ZooKeeperStateServer;
 import org.apache.nifi.controller.status.ConnectionStatus;
 import org.apache.nifi.controller.status.PortStatus;
 import org.apache.nifi.controller.status.ProcessGroupStatus;
@@ -135,6 +140,9 @@ import org.apache.nifi.provenance.ProvenanceEventRecord;
 import org.apache.nifi.provenance.ProvenanceEventRepository;
 import org.apache.nifi.provenance.ProvenanceEventType;
 import org.apache.nifi.provenance.StandardProvenanceEventRecord;
+import org.apache.nifi.registry.VariableRegistry;
+import org.apache.nifi.registry.VariableRegistryFactory;
+import org.apache.nifi.registry.VariableRegistryUtils;
 import org.apache.nifi.remote.RemoteGroupPort;
 import org.apache.nifi.remote.RemoteResourceManager;
 import org.apache.nifi.remote.RemoteSiteListener;
@@ -153,6 +161,8 @@ import org.apache.nifi.reporting.ReportingInitializationContext;
 import org.apache.nifi.reporting.ReportingTask;
 import org.apache.nifi.reporting.Severity;
 import org.apache.nifi.scheduling.SchedulingStrategy;
+import org.apache.nifi.stream.io.LimitingInputStream;
+import org.apache.nifi.stream.io.StreamUtils;
 import org.apache.nifi.util.FormatUtils;
 import org.apache.nifi.util.NiFiProperties;
 import org.apache.nifi.util.ReflectionUtils;
@@ -173,6 +183,7 @@ import org.apache.nifi.web.api.dto.RemoteProcessGroupDTO;
 import org.apache.nifi.web.api.dto.RemoteProcessGroupPortDTO;
 import org.apache.nifi.web.api.dto.TemplateDTO;
 import org.apache.nifi.web.api.dto.status.StatusHistoryDTO;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig.ConfigException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -182,6 +193,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Path;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -205,6 +217,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static java.util.Objects.requireNonNull;
@@ -251,8 +264,12 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
     private final AuditService auditService;
     private final EventDrivenWorkerQueue eventDrivenWorkerQueue;
     private final ComponentStatusRepository componentStatusRepository;
+    private final StateManagerProvider stateManagerProvider;
     private final long systemStartTime = System.currentTimeMillis(); // time at which the node was started
     private final ConcurrentMap<String, ReportingTaskNode> reportingTasks = new ConcurrentHashMap<>();
+    private final VariableRegistry variableRegistry;
+
+    private volatile ZooKeeperStateServer zooKeeperStateServer;
 
     // The Heartbeat Bean is used to provide an Atomic Reference to data that is used in heartbeats that may
     // change while the instance is running. We do this because we want to generate heartbeats even if we
@@ -410,25 +427,37 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         bulletinRepository = new VolatileBulletinRepository();
         nodeBulletinSubscriber = new AtomicReference<>();
 
+        variableRegistry = createVariableRegistry(properties);
+
         try {
             this.provenanceEventRepository = createProvenanceRepository(properties);
             this.provenanceEventRepository.initialize(createEventReporter(bulletinRepository));
-
-            this.contentRepository = createContentRepository(properties);
         } catch (final Exception e) {
             throw new RuntimeException("Unable to create Provenance Repository", e);
         }
 
-        processScheduler = new StandardProcessScheduler(this, this, encryptor);
+        try {
+            this.contentRepository = createContentRepository(properties);
+        } catch (final Exception e) {
+            throw new RuntimeException("Unable to create Content Repository", e);
+        }
+
+        try {
+            this.stateManagerProvider = StandardStateManagerProvider.create(properties,variableRegistry);
+        } catch (final IOException e) {
+            throw new RuntimeException(e);
+        }
+
+        processScheduler = new StandardProcessScheduler(this, this, encryptor, stateManagerProvider, variableRegistry);
         eventDrivenWorkerQueue = new EventDrivenWorkerQueue(false, false, processScheduler);
-        controllerServiceProvider = new StandardControllerServiceProvider(processScheduler, bulletinRepository);
+        controllerServiceProvider = new StandardControllerServiceProvider(processScheduler, bulletinRepository, stateManagerProvider, variableRegistry);
 
         final ProcessContextFactory contextFactory = new ProcessContextFactory(contentRepository, flowFileRepository, flowFileEventRepository, counterRepositoryRef.get(), provenanceEventRepository);
         processScheduler.setSchedulingAgent(SchedulingStrategy.EVENT_DRIVEN, new EventDrivenSchedulingAgent(
-            eventDrivenEngineRef.get(), this, eventDrivenWorkerQueue, contextFactory, maxEventDrivenThreads.get(), encryptor));
+            eventDrivenEngineRef.get(), this, stateManagerProvider, eventDrivenWorkerQueue, contextFactory, maxEventDrivenThreads.get(), encryptor, variableRegistry));
 
-        final QuartzSchedulingAgent quartzSchedulingAgent = new QuartzSchedulingAgent(this, timerDrivenEngineRef.get(), contextFactory, encryptor);
-        final TimerDrivenSchedulingAgent timerDrivenAgent = new TimerDrivenSchedulingAgent(this, timerDrivenEngineRef.get(), contextFactory, encryptor);
+        final QuartzSchedulingAgent quartzSchedulingAgent = new QuartzSchedulingAgent(this, timerDrivenEngineRef.get(), contextFactory, encryptor, variableRegistry);
+        final TimerDrivenSchedulingAgent timerDrivenAgent = new TimerDrivenSchedulingAgent(this, timerDrivenEngineRef.get(), contextFactory, encryptor, variableRegistry);
         processScheduler.setSchedulingAgent(SchedulingStrategy.TIMER_DRIVEN, timerDrivenAgent);
         processScheduler.setSchedulingAgent(SchedulingStrategy.PRIMARY_NODE_ONLY, timerDrivenAgent);
         processScheduler.setSchedulingAgent(SchedulingStrategy.CRON_DRIVEN, quartzSchedulingAgent);
@@ -469,7 +498,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
 
         this.snippetManager = new SnippetManager();
 
-        rootGroup = new StandardProcessGroup(UUID.randomUUID().toString(), this, processScheduler, properties, encryptor);
+        rootGroup = new StandardProcessGroup(UUID.randomUUID().toString(), this, processScheduler, properties, encryptor, this, variableRegistry);
         rootGroup.setName(DEFAULT_ROOT_GROUP_NAME);
         instanceId = UUID.randomUUID().toString();
 
@@ -496,6 +525,17 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             snapshotMillis = FormatUtils.getTimeDuration(NiFiProperties.DEFAULT_COMPONENT_STATUS_SNAPSHOT_FREQUENCY, TimeUnit.MILLISECONDS);
         }
 
+        // Initialize the Embedded ZooKeeper server, if applicable
+        if (properties.isStartEmbeddedZooKeeper()) {
+            try {
+                zooKeeperStateServer = ZooKeeperStateServer.create(properties);
+            } catch (final IOException | ConfigException e) {
+                throw new IllegalStateException("Unable to initailize Flow because NiFi was configured to start an Embedded Zookeeper server but failed to do so", e);
+            }
+        } else {
+            zooKeeperStateServer = null;
+        }
+
         componentStatusRepository = createComponentStatusRepository();
         timerDrivenEngineRef.get().scheduleWithFixedDelay(new Runnable() {
             @Override
@@ -505,7 +545,11 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         }, snapshotMillis, snapshotMillis, TimeUnit.MILLISECONDS);
 
         heartbeatBeanRef.set(new HeartbeatBean(rootGroup, false, false));
+
+
     }
+
+
 
     private static FlowFileRepository createFlowFileRepository(final NiFiProperties properties, final ResourceClaimManager contentClaimManager) {
         final String implementationClassName = properties.getProperty(NiFiProperties.FLOWFILE_REPOSITORY_IMPLEMENTATION, DEFAULT_FLOWFILE_REPO_IMPLEMENTATION);
@@ -550,6 +594,20 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         };
     }
 
+    private static VariableRegistry createVariableRegistry(final NiFiProperties properties){
+        VariableRegistry variableRegistry = VariableRegistryUtils.createVariableRegistry();
+
+        final Path[] registryPropPaths = properties.getVariableRegistryPropertiesPaths();
+        try {
+            VariableRegistry customRegistry = VariableRegistryFactory.getPropertiesInstance(registryPropPaths);
+            variableRegistry.addRegistry(customRegistry);
+        } catch (IOException ioe){
+            LOG.error("Failed to load Variable Registry from " + registryPropPaths, ioe);
+        }
+
+        return variableRegistry;
+    }
+
     public void initializeFlow() throws IOException {
         writeLock.lock();
         try {
@@ -565,9 +623,16 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             } else {
                 for (final Connection connection : connections) {
                     final FlowFileQueue queue = connection.getFlowFileQueue();
-                    final Long maxFlowFileId = queue.recoverSwappedFlowFiles();
-                    if (maxFlowFileId != null && maxFlowFileId > maxIdFromSwapFiles) {
-                        maxIdFromSwapFiles = maxFlowFileId;
+                    final SwapSummary swapSummary = queue.recoverSwappedFlowFiles();
+                    if (swapSummary != null) {
+                        final Long maxFlowFileId = swapSummary.getMaxFlowFileId();
+                        if (maxFlowFileId != null && maxFlowFileId > maxIdFromSwapFiles) {
+                            maxIdFromSwapFiles = maxFlowFileId;
+                        }
+
+                        for (final ResourceClaim resourceClaim : swapSummary.getResourceClaims()) {
+                            resourceClaimManager.incrementClaimantCount(resourceClaim);
+                        }
                     }
                 }
             }
@@ -581,6 +646,8 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             if (externalSiteListener != null) {
                 externalSiteListener.start();
             }
+
+            notifyComponentsConfigurationRestored();
 
             timerDrivenEngineRef.get().scheduleWithFixedDelay(new Runnable() {
                 @Override
@@ -599,6 +666,31 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             initialized.set(true);
         } finally {
             writeLock.unlock();
+        }
+    }
+
+    private void notifyComponentsConfigurationRestored() {
+        for (final ProcessorNode procNode : getGroup(getRootGroupId()).findAllProcessors()) {
+            final Processor processor = procNode.getProcessor();
+            try (final NarCloseable nc = NarCloseable.withNarLoader()) {
+                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnConfigurationRestored.class, processor);
+            }
+        }
+
+        for (final ControllerServiceNode serviceNode : getAllControllerServices()) {
+            final ControllerService service = serviceNode.getControllerServiceImplementation();
+
+            try (final NarCloseable nc = NarCloseable.withNarLoader()) {
+                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnConfigurationRestored.class, service);
+            }
+        }
+
+        for (final ReportingTaskNode taskNode : getAllReportingTasks()) {
+            final ReportingTask task = taskNode.getReportingTask();
+
+            try (final NarCloseable nc = NarCloseable.withNarLoader()) {
+                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnConfigurationRestored.class, task);
+            }
         }
     }
 
@@ -671,7 +763,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
     private ContentRepository createContentRepository(final NiFiProperties properties) throws InstantiationException, IllegalAccessException, ClassNotFoundException {
         final String implementationClassName = properties.getProperty(NiFiProperties.CONTENT_REPOSITORY_IMPLEMENTATION, DEFAULT_CONTENT_REPO_IMPLEMENTATION);
         if (implementationClassName == null) {
-            throw new RuntimeException("Cannot create Provenance Repository because the NiFi Properties is missing the following property: "
+            throw new RuntimeException("Cannot create Content Repository because the NiFi Properties is missing the following property: "
                 + NiFiProperties.CONTENT_REPOSITORY_IMPLEMENTATION);
         }
 
@@ -770,6 +862,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             .resourceClaimManager(resourceClaimManager)
             .flowFileRepository(flowFileRepository)
             .provenanceRepository(provenanceEventRepository)
+            .heartbeater(this)
             .build();
     }
 
@@ -835,7 +928,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
      * @throws NullPointerException if the argument is null
      */
     public ProcessGroup createProcessGroup(final String id) {
-        return new StandardProcessGroup(requireNonNull(id).intern(), this, processScheduler, properties, encryptor);
+        return new StandardProcessGroup(requireNonNull(id).intern(), this, processScheduler, properties, encryptor, this, variableRegistry);
     }
 
     /**
@@ -869,7 +962,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
     public ProcessorNode createProcessor(final String type, String id, final boolean firstTimeAdded) throws ProcessorInstantiationException {
         id = id.intern();
         final Processor processor = instantiateProcessor(type, id);
-        final ValidationContextFactory validationContextFactory = new StandardValidationContextFactory(controllerServiceProvider);
+        final ValidationContextFactory validationContextFactory = new StandardValidationContextFactory(controllerServiceProvider, variableRegistry);
         final ProcessorNode procNode = new StandardProcessorNode(processor, id, validationContextFactory, processScheduler, controllerServiceProvider);
 
         final LogRepository logRepository = LogRepositoryFactory.getRepository(id);
@@ -881,6 +974,12 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             } catch (final Exception e) {
                 logRepository.removeObserver(StandardProcessorNode.BULLETIN_OBSERVER_ID);
                 throw new ComponentLifeCycleException("Failed to invoke @OnAdded methods of " + procNode.getProcessor(), e);
+            }
+
+            if (firstTimeAdded) {
+                try (final NarCloseable nc = NarCloseable.withNarLoader()) {
+                    ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnConfigurationRestored.class, procNode.getProcessor());
+                }
             }
         }
 
@@ -908,6 +1007,8 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             final ProcessorLog processorLogger = new SimpleProcessLogger(identifier, processor);
             final ProcessorInitializationContext ctx = new StandardProcessorInitializationContext(identifier, processorLogger, this);
             processor.initialize(ctx);
+
+            LogRepositoryFactory.getRepository(identifier).setLogger(processorLogger);
             return processor;
         } catch (final Throwable t) {
             throw new ProcessorInstantiationException(type, t);
@@ -943,6 +1044,10 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
 
     public SnippetManager getSnippetManager() {
         return snippetManager;
+    }
+
+    public StateManagerProvider getStateManagerProvider() {
+        return stateManagerProvider;
     }
 
     /**
@@ -1085,7 +1190,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         this.shutdown = true;
         stopAllProcessors();
 
-        writeLock.lock();
+        readLock.lock();
         try {
             if (isTerminated() || timerDrivenEngineRef.get().isTerminating()) {
                 throw new IllegalStateException("Controller already stopped or still stopping...");
@@ -1103,13 +1208,19 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
 
             clusterTaskExecutor.shutdown();
 
+            if (zooKeeperStateServer != null) {
+                zooKeeperStateServer.shutdown();
+            }
+
             // Trigger any processors' methods marked with @OnShutdown to be called
             rootGroup.shutdown();
+
+            stateManagerProvider.shutdown();
 
             // invoke any methods annotated with @OnShutdown on Controller Services
             for (final ControllerServiceNode serviceNode : getAllControllerServices()) {
                 try (final NarCloseable narCloseable = NarCloseable.withNarLoader()) {
-                    final ConfigurationContext configContext = new StandardConfigurationContext(serviceNode, controllerServiceProvider, null);
+                    final ConfigurationContext configContext = new StandardConfigurationContext(serviceNode, controllerServiceProvider, null, variableRegistry);
                     ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnShutdown.class, serviceNode.getControllerServiceImplementation(), configContext);
                 }
             }
@@ -1165,7 +1276,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
                 }
             }
         } finally {
-            writeLock.unlock();
+            readLock.unlock();
         }
     }
 
@@ -2122,6 +2233,8 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             connStatus.setSourceName(conn.getSource().getName());
             connStatus.setDestinationId(conn.getDestination().getIdentifier());
             connStatus.setDestinationName(conn.getDestination().getName());
+            connStatus.setBackPressureDataSizeThreshold(conn.getFlowFileQueue().getBackPressureDataSizeThreshold());
+            connStatus.setBackPressureObjectThreshold(conn.getFlowFileQueue().getBackPressureObjectThreshold());
 
             final FlowFileEvent connectionStatusReport = statusReport.getReportEntry(conn.getIdentifier());
             if (connectionStatusReport != null) {
@@ -2329,7 +2442,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             // determine if this input port is connected
             final boolean isConnected = port.hasIncomingConnection();
 
-            // we only want to conside remote ports that we are connected to
+            // we only want to consider remote ports that we are connected to
             if (isConnected) {
                 if (port.isRunning()) {
                     activePortCount++;
@@ -2338,15 +2451,15 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
                 }
 
                 activeThreadCount += processScheduler.getActiveThreadCount(port);
-            }
 
-            final FlowFileEvent portEvent = statusReport.getReportEntry(port.getIdentifier());
-            if (portEvent != null) {
-                lineageMillis += portEvent.getAggregateLineageMillis();
-                flowFilesRemoved += portEvent.getFlowFilesRemoved();
-                flowFilesTransferred += portEvent.getFlowFilesOut();
-                sentCount += portEvent.getFlowFilesSent();
-                sentContentSize += portEvent.getBytesSent();
+                final FlowFileEvent portEvent = statusReport.getReportEntry(port.getIdentifier());
+                if (portEvent != null) {
+                    lineageMillis += portEvent.getAggregateLineageMillis();
+                    flowFilesRemoved += portEvent.getFlowFilesRemoved();
+                    flowFilesTransferred += portEvent.getFlowFilesOut();
+                    sentCount += portEvent.getFlowFilesSent();
+                    sentContentSize += portEvent.getBytesSent();
+                }
             }
         }
 
@@ -2354,7 +2467,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             // determine if this output port is connected
             final boolean isConnected = !port.getConnections().isEmpty();
 
-            // we only want to conside remote ports that we are connected from
+            // we only want to consider remote ports that we are connected from
             if (isConnected) {
                 if (port.isRunning()) {
                     activePortCount++;
@@ -2363,12 +2476,12 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
                 }
 
                 activeThreadCount += processScheduler.getActiveThreadCount(port);
-            }
 
-            final FlowFileEvent portEvent = statusReport.getReportEntry(port.getIdentifier());
-            if (portEvent != null) {
-                receivedCount += portEvent.getFlowFilesReceived();
-                receivedContentSize += portEvent.getBytesReceived();
+                final FlowFileEvent portEvent = statusReport.getReportEntry(port.getIdentifier());
+                if (portEvent != null) {
+                    receivedCount += portEvent.getFlowFilesReceived();
+                    receivedContentSize += portEvent.getBytesReceived();
+                }
             }
         }
 
@@ -2580,8 +2693,8 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             }
         }
 
-        final ValidationContextFactory validationContextFactory = new StandardValidationContextFactory(controllerServiceProvider);
-        final ReportingTaskNode taskNode = new StandardReportingTaskNode(task, id, this, processScheduler, validationContextFactory);
+        final ValidationContextFactory validationContextFactory = new StandardValidationContextFactory(controllerServiceProvider, variableRegistry);
+        final ReportingTaskNode taskNode = new StandardReportingTaskNode(task, id, this, processScheduler, validationContextFactory, variableRegistry);
         taskNode.setName(task.getClass().getSimpleName());
 
         if (firstTimeAdded) {
@@ -2597,6 +2710,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
 
             try (final NarCloseable x = NarCloseable.withNarLoader()) {
                 ReflectionUtils.invokeMethodsWithAnnotation(OnAdded.class, task);
+                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnConfigurationRestored.class, taskNode.getReportingTask());
             } catch (final Exception e) {
                 throw new ComponentLifeCycleException("Failed to invoke On-Added Lifecycle methods of " + task, e);
             }
@@ -2679,6 +2793,14 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         final LogRepository logRepository = LogRepositoryFactory.getRepository(id);
         logRepository.addObserver(StandardProcessorNode.BULLETIN_OBSERVER_ID, LogLevel.WARN,
             new ControllerServiceLogObserver(getBulletinRepository(), serviceNode));
+
+        if (firstTimeAdded) {
+            final ControllerService service = serviceNode.getControllerServiceImplementation();
+
+            try (final NarCloseable nc = NarCloseable.withNarLoader()) {
+                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnConfigurationRestored.class, service);
+            }
+        }
 
         return serviceNode;
     }
@@ -3046,8 +3168,49 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
                 if (clustered) {
                     nodeBulletinSubscriber.set(new NodeBulletinProcessingStrategy());
                     bulletinRepository.overrideDefaultBulletinProcessing(nodeBulletinSubscriber.get());
+                    stateManagerProvider.enableClusterProvider();
+
+                    if (zooKeeperStateServer != null) {
+                        processScheduler.submitFrameworkTask(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    zooKeeperStateServer.start();
+                                } catch (final Exception e) {
+                                    LOG.error("NiFi was connected to the cluster but failed to start embedded ZooKeeper Server", e);
+                                    final Bulletin bulletin = BulletinFactory.createBulletin("Embedded ZooKeeper Server", Severity.ERROR.name(),
+                                        "Unable to started embedded ZooKeeper Server. See logs for more details. Will continue trying to start embedded server.");
+                                    getBulletinRepository().addBulletin(bulletin);
+
+                                    // We failed to start the server. Wait a bit and try again.
+                                    try {
+                                        Thread.sleep(TimeUnit.SECONDS.toMillis(5));
+                                    } catch (final InterruptedException ie) {
+                                        // If we are interrupted, stop trying.
+                                        Thread.currentThread().interrupt();
+                                        return;
+                                    }
+
+                                    processScheduler.submitFrameworkTask(this);
+                                }
+                            }
+                        });
+
+                        // Give the server just a bit to start up, so that we don't get connection
+                        // failures on startup if we are using the embedded ZooKeeper server. We need to launch
+                        // the ZooKeeper Server in the background because ZooKeeper blocks indefinitely when we start
+                        // the server. Unfortunately, we have no way to know when it's up & ready. So we wait 1 second.
+                        // We could still get connection failures if we are on a slow machine but this at least makes it far
+                        // less likely. If we do get connection failures, we will still reconnect, but we will get bulletins
+                        // showing failures. This 1-second sleep is an attempt to at least make that occurrence rare.
+                        LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(1L));
+                    }
                 } else {
                     bulletinRepository.restoreDefaultBulletinProcessing();
+                    if (zooKeeperStateServer != null) {
+                        zooKeeperStateServer.shutdown();
+                    }
+                    stateManagerProvider.disableClusterProvider();
                 }
 
                 final List<RemoteProcessGroup> remoteGroups = getGroup(getRootGroupId()).findAllRemoteProcessGroups();
@@ -3088,18 +3251,27 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             final PrimaryNodeState nodeState = primary ? PrimaryNodeState.ELECTED_PRIMARY_NODE : PrimaryNodeState.PRIMARY_NODE_REVOKED;
             final ProcessGroup rootGroup = getGroup(getRootGroupId());
             for (final ProcessorNode procNode : rootGroup.findAllProcessors()) {
-                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, procNode.getProcessor(), nodeState);
+                try (final NarCloseable narCloseable = NarCloseable.withNarLoader()) {
+                    ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, procNode.getProcessor(), nodeState);
+                }
             }
             for (final ControllerServiceNode serviceNode : getAllControllerServices()) {
-                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, serviceNode.getControllerServiceImplementation(), nodeState);
+                try (final NarCloseable narCloseable = NarCloseable.withNarLoader()) {
+                    ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, serviceNode.getControllerServiceImplementation(), nodeState);
+                }
             }
             for (final ReportingTaskNode reportingTaskNode : getAllReportingTasks()) {
-                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, reportingTaskNode.getReportingTask(), nodeState);
+                try (final NarCloseable narCloseable = NarCloseable.withNarLoader()) {
+                    ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, reportingTaskNode.getReportingTask(), nodeState);
+                }
             }
 
             // update primary
             this.primary = primary;
             eventDrivenWorkerQueue.setPrimary(primary);
+
+            // update the heartbeat bean
+            this.heartbeatBeanRef.set(new HeartbeatBean(rootGroup, primary, connected));
         } finally {
             rwLock.writeLock().unlock();
         }
@@ -3248,7 +3420,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         requireNonNull(requestor);
         requireNonNull(requestUri);
 
-        final InputStream stream;
+        InputStream stream;
         final ResourceClaim resourceClaim;
         final ContentClaim contentClaim = flowFile.getContentClaim();
         if (contentClaim == null) {
@@ -3257,6 +3429,12 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         } else {
             resourceClaim = flowFile.getContentClaim().getResourceClaim();
             stream = contentRepository.read(flowFile.getContentClaim());
+            final long contentClaimOffset = flowFile.getContentClaimOffset();
+            if (contentClaimOffset > 0L) {
+                StreamUtils.skip(stream, contentClaimOffset);
+            }
+
+            stream = new LimitingInputStream(stream, flowFile.getSize());
         }
 
         // Register a Provenance Event to indicate that we replayed the data.
@@ -3273,7 +3451,8 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             .setDetails("Download of Content requested by " + requestor + " for " + flowFile);
 
         if (contentClaim != null) {
-            sendEventBuilder.setCurrentContentClaim(resourceClaim.getContainer(), resourceClaim.getSection(), resourceClaim.getId(), contentClaim.getOffset(), flowFile.getSize());
+            sendEventBuilder.setCurrentContentClaim(resourceClaim.getContainer(), resourceClaim.getSection(), resourceClaim.getId(),
+                contentClaim.getOffset() + flowFile.getContentClaimOffset(), flowFile.getSize());
         }
 
         final ProvenanceEventRecord sendEvent = sendEventBuilder.build();
@@ -3687,8 +3866,6 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
                 hbPayload.setCounters(getCounters());
                 hbPayload.setSystemDiagnostics(getSystemDiagnostics());
                 hbPayload.setProcessGroupStatus(procGroupStatus);
-                hbPayload.setSiteToSitePort(remoteInputSocketPort);
-                hbPayload.setSiteToSiteSecure(isSiteToSiteSecure);
 
                 // create heartbeat message
                 final Heartbeat heartbeat = new Heartbeat(getNodeId(), bean.isPrimary(), bean.isConnected(), hbPayload.marshal());

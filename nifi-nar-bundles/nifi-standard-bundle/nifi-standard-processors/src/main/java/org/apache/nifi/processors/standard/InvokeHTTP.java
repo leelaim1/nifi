@@ -49,17 +49,15 @@ import javax.net.ssl.SSLSession;
 
 import com.burgstaller.okhttp.AuthenticationCacheInterceptor;
 import com.burgstaller.okhttp.CachingAuthenticatorDecorator;
-import com.burgstaller.okhttp.DispatchingAuthenticator;
 import com.burgstaller.okhttp.digest.CachingAuthenticator;
 import com.burgstaller.okhttp.digest.DigestAuthenticator;
-
 import com.squareup.okhttp.MediaType;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.Request;
 import com.squareup.okhttp.RequestBody;
 import com.squareup.okhttp.Response;
-
 import com.squareup.okhttp.ResponseBody;
+
 import okio.BufferedSink;
 import org.apache.commons.io.input.TeeInputStream;
 import org.apache.commons.lang3.StringUtils;
@@ -85,6 +83,7 @@ import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.processors.standard.util.MultiAuthenticator;
 import org.apache.nifi.processors.standard.util.SoftLimitBoundedByteArrayOutputStream;
 import org.apache.nifi.ssl.SSLContextService;
 import org.apache.nifi.ssl.SSLContextService.ClientAuth;
@@ -214,6 +213,23 @@ public final class InvokeHTTP extends AbstractProcessor {
             .addValidator(StandardValidators.PORT_VALIDATOR)
             .build();
 
+    public static final PropertyDescriptor PROP_PROXY_USER = new PropertyDescriptor.Builder()
+            .name("invokehttp-proxy-user")
+            .displayName("Proxy Username")
+            .description("Username to set when authenticating against proxy")
+            .required(false)
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .build();
+
+    public static final PropertyDescriptor PROP_PROXY_PASSWORD = new PropertyDescriptor.Builder()
+            .name("invokehttp-proxy-password")
+            .displayName("Proxy Password")
+            .description("Password to set when authenticating against proxy")
+            .required(false)
+            .sensitive(true)
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .build();
+
     public static final PropertyDescriptor PROP_CONTENT_TYPE = new PropertyDescriptor.Builder()
         .name("Content-Type")
         .description("The Content-Type to specify for when content is being transmitted through a PUT or POST. "
@@ -221,8 +237,17 @@ public final class InvokeHTTP extends AbstractProcessor {
         .required(true)
         .expressionLanguageSupported(true)
         .defaultValue("${" + CoreAttributes.MIME_TYPE.key() + "}")
-        .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+        .addValidator(StandardValidators.createAttributeExpressionLanguageValidator(AttributeExpression.ResultType.STRING))
         .build();
+
+    public static final PropertyDescriptor PROP_SEND_BODY = new PropertyDescriptor.Builder()
+            .name("send-message-body")
+            .displayName("Send Message Body")
+            .description("If true, sends the HTTP message body on POST/PUT requests (default).  If false, suppresses the message body and content-type header for these requests.")
+            .defaultValue("true")
+            .allowableValues("true", "false")
+            .required(false)
+            .build();
 
     // Per RFC 7235, 2617, and 2616.
     // basic-credentials = base64-user-pass
@@ -310,6 +335,23 @@ public final class InvokeHTTP extends AbstractProcessor {
             .allowableValues("true", "false")
             .build();
 
+    public static final PropertyDescriptor PROP_USE_CHUNKED_ENCODING = new PropertyDescriptor.Builder()
+            .name("Use Chunked Encoding")
+            .description("When POST'ing or PUT'ing content set this property to true in order to not pass the 'Content-length' header and instead send 'Transfer-Encoding' with "
+                    + "a value of 'chunked'. This will enable the data transfer mechanism which was introduced in HTTP 1.1 to pass data of unknown lengths in chunks.")
+            .required(true)
+            .defaultValue("false")
+            .allowableValues("true", "false")
+            .build();
+
+    public static final PropertyDescriptor PROP_PENALIZE_NO_RETRY = new PropertyDescriptor.Builder()
+            .name("Penalize on \"No Retry\"")
+            .description("Enabling this property will penalize FlowFiles that are routed to the \"No Retry\" relationship.")
+            .required(false)
+            .defaultValue("false")
+            .allowableValues("true", "false")
+            .build();
+
     public static final List<PropertyDescriptor> PROPERTIES = Collections.unmodifiableList(Arrays.asList(
             PROP_METHOD,
             PROP_URL,
@@ -323,13 +365,18 @@ public final class InvokeHTTP extends AbstractProcessor {
             PROP_BASIC_AUTH_PASSWORD,
             PROP_PROXY_HOST,
             PROP_PROXY_PORT,
+            PROP_PROXY_USER,
+            PROP_PROXY_PASSWORD,
             PROP_PUT_OUTPUT_IN_ATTRIBUTE,
             PROP_PUT_ATTRIBUTE_MAX_LENGTH,
             PROP_DIGEST_AUTH,
             PROP_OUTPUT_RESPONSE_REGARDLESS,
             PROP_TRUSTED_HOSTNAME,
             PROP_ADD_HEADERS_TO_REQUEST,
-            PROP_CONTENT_TYPE));
+            PROP_CONTENT_TYPE,
+            PROP_SEND_BODY,
+            PROP_USE_CHUNKED_ENCODING,
+            PROP_PENALIZE_NO_RETRY));
 
     // relationships
     public static final Relationship REL_SUCCESS_REQ = new Relationship.Builder()
@@ -398,6 +445,7 @@ public final class InvokeHTTP extends AbstractProcessor {
     }
 
     private volatile Pattern regexAttributesToSend = null;
+    private volatile boolean useChunked = false;
 
     @Override
     public void onPropertyModified(final PropertyDescriptor descriptor, final String oldValue, final String newValue) {
@@ -424,12 +472,22 @@ public final class InvokeHTTP extends AbstractProcessor {
 
     @Override
     protected Collection<ValidationResult> customValidate(final ValidationContext validationContext) {
-        final List<ValidationResult> results = new ArrayList<>(1);
+        final List<ValidationResult> results = new ArrayList<>(3);
         final boolean proxyHostSet = validationContext.getProperty(PROP_PROXY_HOST).isSet();
         final boolean proxyPortSet = validationContext.getProperty(PROP_PROXY_PORT).isSet();
 
         if ((proxyHostSet && !proxyPortSet) || (!proxyHostSet && proxyPortSet)) {
             results.add(new ValidationResult.Builder().subject("Proxy Host and Port").valid(false).explanation("If Proxy Host or Proxy Port is set, both must be set").build());
+        }
+
+        final boolean proxyUserSet = validationContext.getProperty(PROP_PROXY_USER).isSet();
+        final boolean proxyPwdSet = validationContext.getProperty(PROP_PROXY_PASSWORD).isSet();
+
+        if ((proxyUserSet && !proxyPwdSet) || (!proxyUserSet && proxyPwdSet)) {
+            results.add(new ValidationResult.Builder().subject("Proxy User and Password").valid(false).explanation("If Proxy Username or Proxy Password is set, both must be set").build());
+        }
+        if(proxyUserSet && !proxyHostSet) {
+            results.add(new ValidationResult.Builder().subject("Proxy").valid(false).explanation("If Proxy username is set, proxy host must be set").build());
         }
 
         return results;
@@ -470,7 +528,16 @@ public final class InvokeHTTP extends AbstractProcessor {
             okHttpClient.setHostnameVerifier(new OverrideHostnameVerifier(trustedHostname, okHttpClient.getHostnameVerifier()));
         }
 
+        setAuthenticator(okHttpClient, context);
+
+        useChunked = context.getProperty(PROP_USE_CHUNKED_ENCODING).asBoolean();
+
+        okHttpClientAtomicReference.set(okHttpClient);
+    }
+
+    private void setAuthenticator(OkHttpClient okHttpClient, ProcessContext context) {
         final String authUser = trimToEmpty(context.getProperty(PROP_BASIC_AUTH_USERNAME).getValue());
+        final String proxyUsername = trimToEmpty(context.getProperty(PROP_PROXY_USER).getValue());
 
         // If the username/password properties are set then check if digest auth is being used
         if (!authUser.isEmpty() && "true".equalsIgnoreCase(context.getProperty(PROP_DIGEST_AUTH).getValue())) {
@@ -482,20 +549,31 @@ public final class InvokeHTTP extends AbstractProcessor {
              * Once added this should be refactored to use the built in support. For now, a third party lib is needed.
              */
             final Map<String, CachingAuthenticator> authCache = new ConcurrentHashMap<>();
-
             com.burgstaller.okhttp.digest.Credentials credentials = new com.burgstaller.okhttp.digest.Credentials(authUser, authPass);
-
             final DigestAuthenticator digestAuthenticator = new DigestAuthenticator(credentials);
 
-            DispatchingAuthenticator authenticator = new DispatchingAuthenticator.Builder()
+            MultiAuthenticator authenticator = new MultiAuthenticator.Builder()
                     .with("Digest", digestAuthenticator)
                     .build();
 
+            if(!proxyUsername.isEmpty()) {
+                final String proxyPassword = context.getProperty(PROP_PROXY_PASSWORD).getValue();
+                authenticator.setProxyUsername(proxyUsername);
+                authenticator.setProxyPassword(proxyPassword);
+            }
+
             okHttpClient.interceptors().add(new AuthenticationCacheInterceptor(authCache));
             okHttpClient.setAuthenticator(new CachingAuthenticatorDecorator(authenticator, authCache));
+        } else {
+            // Add proxy authentication only
+            if(!proxyUsername.isEmpty()) {
+                final String proxyPassword = context.getProperty(PROP_PROXY_PASSWORD).getValue();
+                MultiAuthenticator authenticator = new MultiAuthenticator.Builder().build();
+                authenticator.setProxyUsername(proxyUsername);
+                authenticator.setProxyPassword(proxyPassword);
+                okHttpClient.setAuthenticator(authenticator);
+            }
         }
-
-        okHttpClientAtomicReference.set(okHttpClient);
     }
 
     @Override
@@ -739,19 +817,28 @@ public final class InvokeHTTP extends AbstractProcessor {
     }
 
     private RequestBody getRequestBodyToSend(final ProcessSession session, final ProcessContext context, final FlowFile requestFlowFile) {
-        return new RequestBody() {
-            @Override
-            public MediaType contentType() {
-                String contentType = context.getProperty(PROP_CONTENT_TYPE).evaluateAttributeExpressions(requestFlowFile).getValue();
-                contentType = StringUtils.isBlank(contentType) ? DEFAULT_CONTENT_TYPE : contentType;
-                return MediaType.parse(contentType);
-            }
+        if(context.getProperty(PROP_SEND_BODY).asBoolean()) {
+            return new RequestBody() {
+                @Override
+                public MediaType contentType() {
+                    String contentType = context.getProperty(PROP_CONTENT_TYPE).evaluateAttributeExpressions(requestFlowFile).getValue();
+                    contentType = StringUtils.isBlank(contentType) ? DEFAULT_CONTENT_TYPE : contentType;
+                    return MediaType.parse(contentType);
+                }
 
-            @Override
-            public void writeTo(BufferedSink sink) throws IOException {
-                session.exportTo(requestFlowFile, sink.outputStream());
-            }
-        };
+                @Override
+                public void writeTo(BufferedSink sink) throws IOException {
+                    session.exportTo(requestFlowFile, sink.outputStream());
+                }
+
+                @Override
+                public long contentLength(){
+                    return useChunked ? -1 : requestFlowFile.getSize();
+                }
+            };
+        } else {
+            return RequestBody.create(null, new byte[0]);
+        }
     }
 
     private Request.Builder setHeaderProperties(final ProcessContext context, Request.Builder requestBuilder, final FlowFile requestFlowFile) {
@@ -826,6 +913,9 @@ public final class InvokeHTTP extends AbstractProcessor {
             // 1xx, 3xx, 4xx -> NO RETRY
         } else {
             if (request != null) {
+                if (context.getProperty(PROP_PENALIZE_NO_RETRY).asBoolean()) {
+                    request = session.penalize(request);
+                }
                 session.transfer(request, REL_NO_RETRY);
             }
         }

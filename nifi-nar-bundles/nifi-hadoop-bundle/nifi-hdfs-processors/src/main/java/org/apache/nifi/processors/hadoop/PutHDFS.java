@@ -16,17 +16,6 @@
  */
 package org.apache.nifi.processors.hadoop;
 
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -35,7 +24,9 @@ import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.nifi.annotation.behavior.InputRequirement;
 import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.ReadsAttribute;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
+import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
@@ -58,13 +49,28 @@ import org.apache.nifi.stream.io.BufferedInputStream;
 import org.apache.nifi.stream.io.StreamUtils;
 import org.apache.nifi.util.StopWatch;
 
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+
 /**
  * This processor copies FlowFiles to HDFS.
  */
 @InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({"hadoop", "HDFS", "put", "copy", "filesystem"})
 @CapabilityDescription("Write FlowFile data to Hadoop Distributed File System (HDFS)")
-@WritesAttribute(attribute = "filename", description = "The name of the file written to HDFS comes from the value of this attribute.")
+@ReadsAttribute(attribute = "filename", description = "The name of the file written to HDFS comes from the value of this attribute.")
+@WritesAttributes({
+        @WritesAttribute(attribute = "filename", description = "The name of the file written to HDFS is stored in this attribute."),
+        @WritesAttribute(attribute = "absolute.hdfs.path", description = "The absolute path to the file on HDFS is stored in this attribute.")
+})
 @SeeAlso(GetHDFS.class)
 public class PutHDFS extends AbstractHadoopProcessor {
 
@@ -74,6 +80,8 @@ public class PutHDFS extends AbstractHadoopProcessor {
 
     public static final String BUFFER_SIZE_KEY = "io.file.buffer.size";
     public static final int BUFFER_SIZE_DEFAULT = 4096;
+
+    public static final String ABSOLUTE_HDFS_PATH_ATTRIBUTE = "absolute.hdfs.path";
 
     // relationships
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
@@ -144,14 +152,21 @@ public class PutHDFS extends AbstractHadoopProcessor {
             .build();
 
     private static final Set<Relationship> relationships;
-    private static final List<PropertyDescriptor> localProperties;
 
     static {
         final Set<Relationship> rels = new HashSet<>();
         rels.add(REL_SUCCESS);
         rels.add(REL_FAILURE);
         relationships = Collections.unmodifiableSet(rels);
+    }
 
+    @Override
+    public Set<Relationship> getRelationships() {
+        return relationships;
+    }
+
+    @Override
+    protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
         List<PropertyDescriptor> props = new ArrayList<>(properties);
         props.add(DIRECTORY);
         props.add(CONFLICT_RESOLUTION);
@@ -162,17 +177,7 @@ public class PutHDFS extends AbstractHadoopProcessor {
         props.add(REMOTE_OWNER);
         props.add(REMOTE_GROUP);
         props.add(COMPRESSION_CODEC);
-        localProperties = Collections.unmodifiableList(props);
-    }
-
-    @Override
-    public Set<Relationship> getRelationships() {
-        return relationships;
-    }
-
-    @Override
-    protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
-        return localProperties;
+        return props;
     }
 
     @OnScheduled
@@ -332,8 +337,13 @@ public class PutHDFS extends AbstractHadoopProcessor {
                     new Object[]{flowFile, copyFile, millis, dataRate});
 
             final String outputPath = copyFile.toString();
+            final String newFilename = copyFile.getName();
+            final String hdfsPath = copyFile.getParent().toString();
+            flowFile = session.putAttribute(flowFile, CoreAttributes.FILENAME.key(), newFilename);
+            flowFile = session.putAttribute(flowFile, ABSOLUTE_HDFS_PATH_ATTRIBUTE, hdfsPath);
             final String transitUri = (outputPath.startsWith("/")) ? "hdfs:/" + outputPath : "hdfs://" + outputPath;
             session.getProvenanceReporter().send(flowFile, transitUri);
+
             session.transfer(flowFile, REL_SUCCESS);
 
         } catch (final Throwable t) {
@@ -344,7 +354,7 @@ public class PutHDFS extends AbstractHadoopProcessor {
                     getLogger().error("Unable to remove temporary file {} due to {}", new Object[]{tempDotCopyFile, e});
                 }
             }
-            getLogger().error("Failed to write to HDFS due to {}", t);
+            getLogger().error("Failed to write to HDFS due to {}", new Object[]{t});
             session.transfer(session.penalize(flowFile), REL_FAILURE);
             context.yield();
         }

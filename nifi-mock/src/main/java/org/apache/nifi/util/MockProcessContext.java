@@ -34,17 +34,22 @@ import org.apache.nifi.components.ConfigurableComponent;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
 import org.apache.nifi.components.ValidationResult;
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.controller.ControllerServiceLookup;
 import org.apache.nifi.processor.Processor;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.SchedulingContext;
+import org.apache.nifi.registry.VariableRegistry;
+import org.apache.nifi.state.MockStateManager;
 import org.junit.Assert;
 
 public class MockProcessContext extends MockControllerServiceLookup implements SchedulingContext, ControllerServiceLookup {
 
     private final ConfigurableComponent component;
     private final Map<PropertyDescriptor, String> properties = new HashMap<>();
+    private final StateManager stateManager;
+    private final VariableRegistry variableRegistry;
 
     private String annotationData = null;
     private boolean yieldCalled = false;
@@ -52,21 +57,29 @@ public class MockProcessContext extends MockControllerServiceLookup implements S
     private boolean allowExpressionValidation = true;
     private volatile boolean incomingConnection = true;
     private volatile boolean nonLoopConnection = true;
+    private int maxConcurrentTasks = 1;
 
     private volatile Set<Relationship> connections = new HashSet<>();
     private volatile Set<Relationship> unavailableRelationships = new HashSet<>();
+
+    public MockProcessContext(final ConfigurableComponent component, final VariableRegistry variableRegistry) {
+        this(component, new MockStateManager(component), variableRegistry);
+    }
 
     /**
      * Creates a new MockProcessContext for the given Processor
      *
      * @param component being mocked
+     * @param variableRegistry variableRegistry
      */
-    public MockProcessContext(final ConfigurableComponent component) {
+    public MockProcessContext(final ConfigurableComponent component, final StateManager stateManager, final VariableRegistry variableRegistry) {
         this.component = Objects.requireNonNull(component);
+        this.stateManager = stateManager;
+        this.variableRegistry = variableRegistry;
     }
 
-    public MockProcessContext(final ControllerService component, final MockProcessContext context) {
-        this(component);
+    public MockProcessContext(final ControllerService component, final MockProcessContext context, final StateManager stateManager, final VariableRegistry variableRegistry) {
+        this(component, stateManager, variableRegistry);
 
         try {
             annotationData = context.getControllerServiceAnnotationData(component);
@@ -93,12 +106,13 @@ public class MockProcessContext extends MockControllerServiceLookup implements S
 
         final String setPropertyValue = properties.get(descriptor);
         final String propValue = (setPropertyValue == null) ? descriptor.getDefaultValue() : setPropertyValue;
-        return new MockPropertyValue(propValue, this, (enableExpressionValidation && allowExpressionValidation) ? descriptor : null);
+
+        return new MockPropertyValue(propValue, this, variableRegistry, (enableExpressionValidation && allowExpressionValidation) ? descriptor : null);
     }
 
     @Override
     public PropertyValue newPropertyValue(final String rawValue) {
-        return new MockPropertyValue(rawValue, this);
+        return new MockPropertyValue(rawValue, this, variableRegistry);
     }
 
     public ValidationResult setProperty(final String propertyName, final String propertyValue) {
@@ -121,7 +135,7 @@ public class MockProcessContext extends MockControllerServiceLookup implements S
         requireNonNull(value, "Cannot set property to null value; if the intent is to remove the property, call removeProperty instead");
         final PropertyDescriptor fullyPopulatedDescriptor = component.getPropertyDescriptor(descriptor.getName());
 
-        final ValidationResult result = fullyPopulatedDescriptor.validate(value, new MockValidationContext(this));
+        final ValidationResult result = fullyPopulatedDescriptor.validate(value, new MockValidationContext(this, stateManager, variableRegistry));
         String oldValue = properties.put(fullyPopulatedDescriptor, value);
         if (oldValue == null) {
             oldValue = fullyPopulatedDescriptor.getDefaultValue();
@@ -166,7 +180,7 @@ public class MockProcessContext extends MockControllerServiceLookup implements S
 
     @Override
     public int getMaxConcurrentTasks() {
-        return 1;
+        return maxConcurrentTasks;
     }
 
     public void setAnnotationData(final String annotationData) {
@@ -204,7 +218,7 @@ public class MockProcessContext extends MockControllerServiceLookup implements S
      * non-null
      */
     public Collection<ValidationResult> validate() {
-        return component.validate(new MockValidationContext(this));
+        return component.validate(new MockValidationContext(this, stateManager, variableRegistry));
     }
 
     public boolean isValid() {
@@ -341,5 +355,19 @@ public class MockProcessContext extends MockControllerServiceLookup implements S
 
         final List<Range> elRanges = Query.extractExpressionRanges(getProperty(property).getValue());
         return (elRanges != null && !elRanges.isEmpty());
+    }
+
+    @Override
+    public StateManager getStateManager() {
+        return stateManager;
+    }
+
+    @Override
+    public String getName() {
+        return "";
+    }
+
+    protected void setMaxConcurrentTasks(int maxConcurrentTasks) {
+        this.maxConcurrentTasks = maxConcurrentTasks;
     }
 }
