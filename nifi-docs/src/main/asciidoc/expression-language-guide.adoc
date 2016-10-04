@@ -731,7 +731,8 @@ then the following Expressions will result in the following values:
 *Return Type*: [.returnType]#String#
 
 *Examples*: If the "line" attribute contains the value _"Jacobson, John", 32, Mr._
-	and the "altLine" attribute contains the value _Jacobson, John|32|Mr._
+	and the "
+	" attribute contains the value _Jacobson, John|32|Mr._
     then the following Expressions will result in the following values:
 
 .GetDelimitedField Examples
@@ -741,7 +742,7 @@ then the following Expressions will result in the following values:
 | `${line:getDelimitedField(2):trim()}` | 32
 | `${line:getDelimitedField(1)}` | "Jacobson, John"
 | `${line:getDelimitedField(1, ',', '"', '\\', true)}` | Jacobson, John
-| `${altLine:getDelimitedField(1, '|')} | Jacobson, John
+| `${altLine:getDelimitedField(1, '\|')}` | Jacobson, John
 |======================================================================
 
 
